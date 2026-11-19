@@ -1,0 +1,17 @@
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Dependencies & builds
+node_modules/
+dist/
+.netlify/
+
+# Secrets — never commit these
+.env
+.env.*
+!.env.example
+supabase/.temp/
+supabase/.branches/

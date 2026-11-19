@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TrackGimex — Rent tracking for landlords, agents &amp; tenants</title>
+  <meta name="description" content="TrackGimex brings rent collection, receipts, expenses, vacancies and lease renewals into one easy dashboard for Kenyan landlords, agents and tenants.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+  <header class="site-header">
+    <div class="container">
+      <a class="brand" href="index.html"><span class="logo-mark" data-logo></span>TrackGimex</a>
+      <button class="nav-toggle" aria-label="Menu" onclick="document.querySelector('.site-nav').classList.toggle('open')">☰</button>
+      <nav class="site-nav">
+        <a href="#features">Features</a>
+        <a href="#how">How it works</a>
+        <a href="#about">About</a>
+        <a href="login.html?role=tenant">Tenant login</a>
+        <a class="btn btn-primary btn-sm" href="login.html?role=landlord">Landlord / Agent login</a>
+      </nav>
+    </div>
+  </header>
+
+  <section class="hero">
+    <div class="hero-bg" aria-hidden="true"></div>
+    <div class="container">
+      <div class="hero-inner">
+        <p class="eyebrow">Property management made simple</p>
+        <h1>Every property, tenant and shilling — <span class="green">tracked.</span></h1>
+        <p class="lead">TrackGimex brings rent collection, receipts, expenses and lease renewals into one easy dashboard.</p>
+        <div class="hero-cta">
+          <a class="btn btn-primary btn-lg" href="login.html?mode=register">Get Started</a>
+          <a class="btn btn-outline btn-lg" href="#about">About</a>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="block" id="features">
+    <div class="container">
+      <div class="section-head">
+        <p class="eyebrow">Features</p>
+        <h2>Everything a first-time landlord needs</h2>
+        <p class="muted">No spreadsheets, no lost receipt books. Set up your building in two minutes.</p>
+      </div>
+      <div class="grid grid-3" id="featureGrid"></div>
+    </div>
+  </section>
+
+  <section class="block" id="how">
+    <div class="container grid grid-2">
+      <div class="role-card">
+        <p class="eyebrow">For landlords &amp; agents</p>
+        <h3>Run your buildings from your phone</h3>
+        <ol class="steps">
+          <li><div><strong>Add your building</strong><span>Type the name, location and how many houses it has. TrackGimex creates every unit for you.</span></div></li>
+          <li><div><strong>Do your monthly check</strong><span>Each month, mark which houses are occupied, empty, reserved or under repair.</span></div></li>
+          <li><div><strong>Track rent &amp; receipts</strong><span>See who has paid, who owes, and send reminders. Every payment gets a receipt.</span></div></li>
+        </ol>
+        <a class="btn btn-primary" href="login.html?role=landlord&mode=register" style="margin-top:22px">Create landlord account</a>
+      </div>
+      <div class="role-card">
+        <p class="eyebrow">For tenants</p>
+        <h3>Find a house, pay rent, move out — easily</h3>
+        <ol class="steps">
+          <li><div><strong>Browse empty houses</strong><span>See vacant houses with rent and deposit before you visit.</span></div></li>
+          <li><div><strong>Request or book</strong><span>Send a request, or pay the deposit to reserve the house immediately.</span></div></li>
+          <li><div><strong>Pay rent &amp; give notice</strong><span>Pay by M-Pesa, card or bank and download receipts. Moving? Tell your landlord in one tap.</span></div></li>
+        </ol>
+        <a class="btn btn-outline" href="login.html?role=tenant&mode=register" style="margin-top:22px">Create tenant account</a>
+      </div>
+    </div>
+  </section>
+
+  <section class="block" id="about">
+    <div class="container">
+      <div class="section-head">
+        <p class="eyebrow">About TrackGimex</p>
+        <h2>Built for Kenyan rentals</h2>
+        <p class="muted">TrackGimex is a simple rent tracker for people who own or manage rental houses: bedsitters, one and two bedrooms, apartments and plots. Amounts are in Kenyan shillings and payments support M-Pesa, so landlords, caretakers, agents and tenants work from the same up-to-date record.</p>
+      </div>
+      <div class="cta-band">
+        <h2>Ready to track every shilling?</h2>
+        <a class="btn btn-lg" href="login.html?mode=register">Get Started — it's free</a>
+      </div>
+    </div>
+  </section>
+
+  <footer class="site-footer">
+    <div class="container">
+      <a class="brand" href="index.html"><span class="logo-mark sm" data-logo></span>TrackGimex</a>
+      <span>© <span id="yr"></span> TrackGimex. Rent tracking made simple.</span>
+    </div>
+  </footer>
+
+  <script src="js/store.js"></script>
+  <script src="js/ui.js"></script>
+  <script>
+    document.getElementById("yr").textContent = new Date().getFullYear();
+    const F = [
+      ["building", "Custom buildings & units", "Add as many buildings as you own and set exactly how many houses each one has, with their own rent and deposit."],
+      ["check", "Monthly occupancy check", "Every month, mark which houses are empty, occupied, reserved or under maintenance, and keep a history."],
+      ["cash", "Rent tracker", "See paid, partial and unpaid rent per house for any month. Record cash payments and send reminders."],
+      ["door", "Instant move-out alerts", "When a tenant says they are moving out, you are notified immediately and the house is flagged."],
+      ["inbox", "House requests & bookings", "Tenants request empty houses or pay a deposit to book. You approve or decline with one click."],
+      ["receipt", "Receipts, expenses & leases", "Printable receipts, expense tracking, profit summary and lease renewal reminders."],
+    ];
+    document.getElementById("featureGrid").innerHTML = F.map(([i, t, d]) =>
+      `<div class="feature"><div class="f-ic">${UI.icon(i)}</div><h3>${t}</h3><p>${d}</p></div>`).join("");
+    // If already logged in, change CTA
+    const me = Store.currentUser();
+    if (me) document.querySelectorAll('.hero-cta .btn-primary').forEach(b => { b.textContent = "Open dashboard"; b.href = me.role === "landlord" ? "landlord.html" : "tenant.html"; });
+  </script>
+</body>
+</html>

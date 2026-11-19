@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Log in — TrackGimex</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+  <div class="auth-wrap">
+    <aside class="auth-side">
+      <a class="brand" href="index.html"><span class="logo-mark" data-logo></span>TrackGimex</a>
+      <div>
+        <p class="eyebrow" id="sideEyebrow">Landlords &amp; agents</p>
+        <h2 id="sideTitle">Every property, tenant and shilling — <span class="green">tracked.</span></h2>
+      </div>
+    </aside>
+
+    <main class="auth-main">
+      <div class="auth-card">
+        <div class="tabs" role="tablist">
+          <button type="button" data-role="landlord" class="active">Landlord / Agent</button>
+          <button type="button" data-role="tenant">Tenant</button>
+        </div>
+
+        <h1 id="title" style="font-size:1.8rem;font-weight:800;margin-bottom:6px">Welcome back</h1>
+        <p class="muted" id="subtitle" style="margin-bottom:24px">Log in to manage your properties.</p>
+
+        <form id="loginForm" novalidate>
+          <div class="field"><label for="le">Email</label><input id="le" name="email" type="email" autocomplete="email" required></div>
+          <div class="field"><label for="lp">Password</label><input id="lp" name="password" type="password" autocomplete="current-password" required></div>
+          <button class="btn btn-primary btn-block" type="submit">Log in</button>
+        </form>
+
+        <form id="registerForm" novalidate hidden>
+          <div class="field"><label for="rn">Full name</label><input id="rn" name="name" required></div>
+          <div class="field" id="kindField">
+            <label for="rk">I am a</label>
+            <select id="rk" name="kind"><option>Landlord</option><option>Agent</option><option>Caretaker</option></select>
+          </div>
+          <div class="field-row">
+            <div class="field"><label for="re">Email</label><input id="re" name="email" type="email" required></div>
+            <div class="field"><label for="rph">Phone</label><input id="rph" name="phone" placeholder="07XX XXX XXX"></div>
+          </div>
+          <div class="field"><label for="rp">Password</label><input id="rp" name="password" type="password" minlength="6" required>
+            <p class="hint" id="regHint">At least 6 characters.</p></div>
+          <button class="btn btn-primary btn-block" type="submit">Create account</button>
+        </form>
+
+        <p class="switch-link" id="switchLine"></p>
+
+        <div class="demo-box" id="demoBox"></div>
+      </div>
+    </main>
+  </div>
+
+  <script src="js/store.js"></script>
+  <script src="js/ui.js"></script>
+  <script>
+    const params = new URLSearchParams(location.search);
+    let role = params.get("role") === "tenant" ? "tenant" : "landlord";
+    let mode = params.get("mode") === "register" ? "register" : "login";
+    const next = params.get("next");
+
+    function render() {
+      UI.$$(".tabs button").forEach(b => b.classList.toggle("active", b.dataset.role === role));
+      UI.$("#loginForm").hidden = mode !== "login";
+      UI.$("#registerForm").hidden = mode !== "register";
+      UI.$("#kindField").hidden = role !== "landlord";
+      const L = role === "landlord";
+      UI.$("#title").textContent = mode === "login" ? "Welcome back" : (L ? "Create landlord / agent account" : "Create tenant account");
+      UI.$("#subtitle").textContent = L
+        ? (mode === "login" ? "Log in to manage your properties." : "Add your buildings and start tracking rent today.")
+        : (mode === "login" ? "Log in to pay rent, find a house or give notice." : "Find empty houses, book and pay rent online.");
+      UI.$("#regHint").textContent = L ? "At least 6 characters." : "At least 6 characters. Use the phone number your landlord has, so your house is linked automatically.";
+      UI.$("#sideEyebrow").textContent = L ? "Landlords & agents" : "Tenants";
+      UI.$("#sideTitle").innerHTML = L ? 'Every property, tenant and shilling — <span class="green">tracked.</span>'
+        : 'Find your next home and pay rent — <span class="green">in minutes.</span>';
+      UI.$("#switchLine").innerHTML = mode === "login"
+        ? 'New to TrackGimex? <button type="button" data-mode="register">Create an account</button>'
+        : 'Already have an account? <button type="button" data-mode="login">Log in</button>';
+      UI.$("#demoBox").innerHTML = L
+        ? 'Demo landlord: <code>landlord@demo.com</code> / <code>demo123</code>'
+        : 'Demo tenants: <code>tenant@demo.com</code> (has a house) or <code>mercy@demo.com</code> (house hunting) — password <code>demo123</code>';
+    }
+    UI.$$(".tabs button").forEach(b => b.onclick = () => { role = b.dataset.role; render(); });
+    UI.$("#switchLine").onclick = e => { const m = e.target.dataset.mode; if (m) { mode = m; render(); } };
+
+    const go = u => location.href = next || (u.role === "landlord" ? "landlord.html" : "tenant.html");
+    UI.$("#loginForm").onsubmit = e => {
+      e.preventDefault();
+      const f = new FormData(e.target);
+      try { go(Store.login(f.get("email"), f.get("password"), role)); }
+      catch (err) { UI.toast(err.message, "err"); }
+    };
+    UI.$("#registerForm").onsubmit = e => {
+      e.preventDefault();
+      const f = Object.fromEntries(new FormData(e.target));
+      if (!/^\S+@\S+\.\S+$/.test(f.email)) return UI.toast("Please enter a valid email.", "err");
+      try { go(Store.register({ ...f, role })); }
+      catch (err) { UI.toast(err.message, "err"); }
+    };
+    render();
+  </script>
+</body>
+</html>

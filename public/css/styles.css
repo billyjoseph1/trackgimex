@@ -117,6 +117,7 @@ label { display: block; font-weight: 600; font-size: .85rem; margin-bottom: 6px;
 .field { margin-bottom: 16px; }
 .field-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 14px; }
 input, select, textarea { width: 100%; background: var(--surface-2); border: 1px solid var(--line); color: var(--text); border-radius: 10px; padding: 11px 13px; font: inherit; font-size: .95rem; }
+input::placeholder, textarea::placeholder { text-transform: none; color: #6b7178; }
 input:focus, select:focus, textarea:focus { outline: none; border-color: var(--green); box-shadow: 0 0 0 3px var(--green-soft); }
 input[type=checkbox], input[type=radio] { width: auto; accent-color: var(--green); }
 textarea { min-height: 90px; resize: vertical; }

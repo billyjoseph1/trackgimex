@@ -2,9 +2,11 @@
 const Shell = (() => {
   let cfg, me;
 
-  function init(options) {
+  async function init(options) {
     cfg = options;
-    me = Store.currentUser();
+    document.body.innerHTML = UI.loading("Loading your dashboard…");
+    try { me = await Store.init(); }
+    catch (err) { document.body.innerHTML = UI.failed(err.message); return null; }
     if (!me || me.role !== cfg.role) {
       const here = location.pathname.split("/").pop() + location.search;
       location.replace("login.html?role=" + cfg.role + "&next=" + encodeURIComponent(here));
@@ -16,8 +18,8 @@ const Shell = (() => {
           <a class="brand" href="index.html"><span class="logo-mark sm">${UI.LOGO}</span>TrackGimex</a>
           <nav class="side-nav" id="sideNav"></nav>
           <div class="side-foot">
-            <div class="me"><div class="avatar">${UI.esc(me.name[0] || "?")}</div>
-              <div><div class="name">${UI.esc(me.name)}</div><div class="role">${UI.esc(me.role === "landlord" ? me.kind || "Landlord" : "Tenant")}</div></div></div>
+            <div class="me"><div class="avatar" id="meAvatar"></div>
+              <div><div class="name" id="meName"></div><div class="role" id="meRole"></div></div></div>
             <div class="side-nav"><button data-logout>${UI.icon("logout")} Log out</button></div>
           </div>
         </aside>
@@ -28,43 +30,52 @@ const Shell = (() => {
               <h1 id="viewTitle"></h1>
             </div>
             <div class="topbar-actions" id="topActions">
+              <button class="bell" id="refreshBtn" aria-label="Refresh" title="Refresh">⟳</button>
               <button class="bell" id="bellBtn" aria-label="Notifications">${UI.icon("bell")}<span class="dot" id="bellDot" hidden></span></button>
             </div>
           </header>
           <div class="content" id="view"></div>
         </div>
       </div>`;
-    UI.$("[data-logout]").onclick = () => { Store.logout(); location.href = "index.html"; };
+    UI.$("[data-logout]").onclick = async () => { await Store.logout(); location.href = "index.html"; };
     UI.$("#bellBtn").onclick = () => go("notifications");
+    UI.$("#refreshBtn").onclick = async () => {
+      try { await Store.refresh(); render(); UI.toast("Up to date."); } catch (err) { UI.toast(err.message, "err"); }
+    };
     UI.$("#menuBtn").onclick = () => UI.$("#sidebar").classList.toggle("open");
     window.addEventListener("hashchange", render);
-    // Pick up changes made in another tab (e.g. tenant & landlord open side by side)
-    window.addEventListener("storage", (e) => { if (e.key === "trackgimex_db_v2") location.reload(); });
+    // live updates: a new notification means something changed — data is already reloaded
+    Store.onChange((note) => { if (!UI.$(".modal-backdrop")) render(); if (note && note.text) UI.toast(note.text); });
     // One click handler for every [data-act] button, anywhere on the page (including modals)
-    document.addEventListener("click", (e) => {
+    document.addEventListener("click", async (e) => {
       const el = e.target.closest("[data-act]");
-      if (!el || !cfg.actions[el.dataset.act]) return;
+      if (!el || !cfg.actions[el.dataset.act] || el.dataset.busy) return;
       e.preventDefault();
-      try { cfg.actions[el.dataset.act](el.dataset, el); }
+      el.dataset.busy = "1";
+      try { await cfg.actions[el.dataset.act](el.dataset, el); }
       catch (err) { UI.toast(err.message, "err"); }
+      finally { delete el.dataset.busy; }
     });
-    document.addEventListener("change", (e) => {
+    document.addEventListener("change", async (e) => {
       const el = e.target.closest("[data-change]");
-      if (el && cfg.actions[el.dataset.change]) cfg.actions[el.dataset.change](el.dataset, el);
+      if (!el || !cfg.actions[el.dataset.change]) return;
+      try { await cfg.actions[el.dataset.change](el.dataset, el); } catch (err) { UI.toast(err.message, "err"); }
     });
     render();
     return me;
   }
 
   const current = () => (location.hash.slice(1).split("?")[0] || cfg.nav[0][0]);
-  function go(view) {
-    if (current() === view) render(); else location.hash = view;
-  }
+  function go(view) { if (current() === view) render(); else location.hash = view; }
 
   function render() {
     me = Store.currentUser();
+    if (!me) { location.replace("login.html?role=" + cfg.role); return; }
     const view = current();
     const counts = cfg.counts ? cfg.counts(me) : {};
+    UI.$("#meAvatar").textContent = (me.name || "?")[0];
+    UI.$("#meName").textContent = me.name;
+    UI.$("#meRole").textContent = me.role === "landlord" ? me.kind || "Landlord" : "Tenant";
     UI.$("#sideNav").innerHTML = cfg.nav.map(([id, label, ic]) =>
       `<button class="${id === view ? "active" : ""}" onclick="location.hash='${id}'">${UI.icon(ic)} ${label}
         ${counts[id] ? `<span class="count">${counts[id]}</span>` : ""}</button>`).join("");
@@ -74,10 +85,12 @@ const Shell = (() => {
     const entry = cfg.nav.find((n) => n[0] === view) || cfg.nav[0];
     UI.$("#viewTitle").textContent = entry[1];
     UI.$("#sidebar").classList.remove("open");
-    const fn = cfg.views[entry[0]];
-    UI.$("#view").innerHTML = fn(me);
+    const keepScroll = render.lastView === entry[0];
+    const y = window.scrollY;
+    UI.$("#view").innerHTML = cfg.views[entry[0]](me);
     if (cfg.after && cfg.after[entry[0]]) cfg.after[entry[0]](me);
-    window.scrollTo(0, 0);
+    window.scrollTo(0, keepScroll ? y : 0);
+    render.lastView = entry[0];
   }
 
   function notificationsView(me) {
@@ -86,10 +99,11 @@ const Shell = (() => {
       <div class="card-head"><h3>All notifications</h3><span class="muted small">${list.length} total</span></div>
       ${list.length ? list.map((n) => `<div class="notif ${n.read ? "" : "unread"} ${/MOVE-OUT/.test(n.text) ? "alert" : ""}">
         <span class="n-dot"></span><div style="flex:1"><div>${UI.esc(n.text)}</div><div class="n-time">${UI.timeAgo(n.date)}</div></div>
-        ${n.link ? `<a class="btn btn-ghost btn-sm" href="#${n.link}">View</a>` : ""}</div>`).join("")
+        ${n.link ? `<a class="btn btn-ghost btn-sm" href="#${UI.esc(n.link)}">View</a>` : ""}</div>`).join("")
         : '<div class="empty">No notifications yet.</div>'}</div>`;
-    // mark as read after showing them
-    setTimeout(() => { Store.markAllRead(me.id); UI.$("#bellDot").hidden = true; }, 600);
+    setTimeout(async () => {
+      try { await Store.markAllRead(); UI.$("#bellDot").hidden = true; } catch (e) { /* not critical */ }
+    }, 800);
     return html;
   }
 

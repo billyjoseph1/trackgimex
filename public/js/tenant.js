@@ -2,53 +2,61 @@
 (() => {
   const { esc, badge, icon, modal, toast, confirmBox } = UI;
   const S = Store;
-  let me = S.currentUser();
   const filters = { q: "", type: "", max: "" };
   const refresh = () => Shell.render();
   const propName = (id) => S.property(id)?.name || "";
-  const myNotice = (u) => u && S.db.notices.find((n) => n.unitId === u.id && n.tenantId === me.id && n.status !== "completed");
-  const myRequests = () => S.db.requests.filter((r) => r.tenantId === me.id).sort((a, b) => b.date.localeCompare(a.date));
+  const myNotice = (u) => u && S.db.notices.find((n) => n.unitId === u.id && S.isMine(n.tenantId) && n.status !== "completed");
+  const myRequests = () => S.db.requests.filter((r) => S.isMine(r.tenantId)).sort((a, b) => b.date.localeCompare(a.date));
+  const myPayments = () => S.paymentsOf((p) => S.isMine(p.tenantId));
   const houseIcon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 11l9-8 9 8"/><path d="M5 10v10h14V10"/><path d="M10 20v-6h4v6"/></svg>`;
+  const payStatus = (p) => p.status === "confirmed" ? "" : p.status === "pending" ? badge("awaiting") : badge(p.status);
+
+  const inviteForm = `<form id="inviteForm" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
+      <input name="code" placeholder="Invite code e.g. 7KQ2MX9P" maxlength="12" style="max-width:240px;text-transform:uppercase" autocomplete="off">
+      <button class="btn btn-outline" data-act="claim">Link my house</button></form>`;
 
   const views = {};
 
   views.home = () => {
-    const u = S.tenantUnit(me.id);
+    const me = S.me;
+    const u = S.myUnit();
     if (!u) {
       const pending = myRequests().filter((r) => r.status === "pending");
       return `<div class="home-hero"><div><p class="eyebrow" style="margin-bottom:8px">Welcome, ${esc(me.name.split(" ")[0])}</p>
           <h2>You're not linked to a house yet</h2>
-          <p class="muted" style="margin-top:8px;max-width:520px">Browse empty houses, send a request or pay the deposit to book one. If you already rent a house, ask your landlord to add you using your phone number <strong>${esc(me.phone || "")}</strong>.</p></div>
+          <p class="muted" style="margin-top:8px;max-width:540px">Looking for a house? Browse empty houses and request or book one.
+          Already renting? Enter the invite code your landlord gave you.</p>
+          ${inviteForm}</div>
           <div style="align-self:center"><a class="btn btn-primary btn-lg" href="#find">${icon("search")} Find a house</a></div></div>
         ${pending.length ? `<div class="card"><div class="card-head"><h3>Your pending requests</h3><a href="#requests" class="btn btn-ghost btn-sm">View all</a></div>
-          ${pending.map((r) => { const h = S.unit(r.unitId); return `<div class="notif"><span class="n-dot" style="background:var(--amber)"></span><div style="flex:1">
-            <strong>${esc(h.label)}</strong> at ${esc(propName(h.propertyId))} · ${S.money(h.rent)}/month<div class="n-time">${r.paid ? "Deposit paid — waiting for landlord approval" : "Waiting for landlord"}</div></div>
-            ${r.paid ? "" : `<a class="btn btn-primary btn-sm" href="pay.html?unit=${h.id}&kind=booking">Pay deposit</a>`}</div>`; }).join("")}</div>` : ""}`;
+          ${pending.map((r) => { const h = S.unit(r.unitId); if (!h) return ""; return `<div class="notif"><span class="n-dot" style="background:var(--amber)"></span><div style="flex:1">
+            <strong>${esc(h.label)}</strong> at ${esc(propName(h.propertyId))} · ${S.money(h.rent)}/month<div class="n-time">${r.paid ? "Payment reported — waiting for the landlord" : "Waiting for the landlord"}</div></div>
+            ${r.paid || h.status !== "vacant" ? "" : `<a class="btn btn-primary btn-sm" href="pay.html?unit=${h.id}&kind=booking">Pay deposit</a>`}</div>`; }).join("")}</div>` : ""}`;
     }
     const p = S.property(u.propertyId);
-    const ll = S.user(p.landlordId);
+    const ll = S.user(p?.landlordId);
     const r = S.rentStatus(u, S.ym());
     const dep = S.depositPaid(u);
     const notice = myNotice(u);
-    // arrears from previous months since lease start (up to 12)
     const months = [];
     for (let i = 1; i <= 12; i++) {
       const d = new Date(); d.setDate(1); d.setMonth(d.getMonth() - i);
       const m = S.ym(d);
-      if (u.leaseStart && m < u.leaseStart.slice(0, 7)) break;
+      if (!u.leaseStart || m < u.leaseStart.slice(0, 7)) break;
       const st = S.rentStatus(u, m);
       if (st.balance) months.push({ m, ...st });
     }
-    const pays = S.paymentsOf((x) => x.tenantId === me.id).slice(0, 5);
+    const pays = myPayments().slice(0, 5);
     return `
       ${notice ? `<div class="alert-box danger" style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;align-items:center">
         <div><strong>You gave notice to move out on ${S.fmtDate(notice.moveOutDate)}.</strong> ${notice.status === "acknowledged" ? "Your landlord has acknowledged it." : "Your landlord has been notified."}</div>
         <button class="btn btn-sm btn-outline" data-act="withdraw" data-id="${notice.id}">Withdraw notice</button></div>` : ""}
       ${months.length ? `<div class="alert-box warn">You have unpaid rent for ${months.map((x) => S.monthLabel(x.m) + " (" + S.money(x.balance) + ")").join(", ")}.</div>` : ""}
+      ${r.pending ? `<div class="alert-box info">${S.money(r.pending)} for ${S.monthLabel(S.ym())} is waiting for your landlord to confirm.</div>` : ""}
       <div class="home-hero">
         <div><p class="eyebrow" style="margin-bottom:8px">My home</p>
-          <h2>House ${esc(u.label)} · ${esc(p.name)}</h2>
-          <p class="muted" style="margin-top:4px">${esc(u.type)} · ${esc(p.location)}</p>
+          <h2>House ${esc(u.label)} · ${esc(p?.name)}</h2>
+          <p class="muted" style="margin-top:4px">${esc(u.type)} · ${esc(p?.location)}</p>
           <div style="display:flex;gap:10px;margin-top:20px;flex-wrap:wrap">
             <a class="btn btn-primary" href="pay.html?unit=${u.id}&kind=rent">${icon("cash")} Pay rent</a>
             ${dep < u.deposit ? `<a class="btn btn-outline" href="pay.html?unit=${u.id}&kind=deposit">Pay deposit</a>` : ""}
@@ -72,17 +80,16 @@
   };
 
   const payRow = (p) => `<tr><td>${S.fmtDate(p.date)}</td>
-    <td>${p.kind === "rent" ? "Rent · " + S.monthLabel(p.month) : p.kind === "deposit" ? "Deposit" : "Booking"} <span class="muted small">· ${esc(S.unit(p.unitId)?.label || "")}</span>
-      ${p.refunded ? '<span class="badge st-unpaid">Refunded</span>' : ""}</td>
-    <td>${esc(p.method)}</td><td class="num"><strong>${S.money(p.amount)}</strong></td>
-    <td class="actions"><button class="btn btn-sm btn-ghost" data-act="receipt" data-id="${p.id}">Receipt</button></td></tr>`;
+    <td>${p.kind === "rent" ? "Rent · " + S.monthLabel(p.month) : "Deposit"} <span class="muted small">· ${esc(p.unitLabel)}</span> ${payStatus(p)}</td>
+    <td>${esc(p.method)}${p.ref ? `<div class="muted small">${esc(p.ref)}</div>` : ""}</td><td class="num"><strong>${S.money(p.amount)}</strong></td>
+    <td class="actions"><button class="btn btn-sm btn-ghost" data-act="receipt" data-id="${p.id}">${p.status === "confirmed" ? "Receipt" : "View"}</button></td></tr>`;
 
   views.find = () => {
-    const mine = S.tenantUnit(me.id);
-    const types = [...new Set(S.db.units.filter((u) => u.status === "vacant").map((u) => u.type))].sort();
-    const list = S.db.units.filter((u) => u.status === "vacant").filter((u) => {
+    const mine = S.myUnit();
+    const vacant = S.db.units.filter((u) => u.status === "vacant" && S.property(u.propertyId));
+    const types = [...new Set(vacant.map((u) => u.type))].sort();
+    const list = vacant.filter((u) => {
       const p = S.property(u.propertyId);
-      if (!p) return false;
       const hay = (p.name + " " + p.location + " " + u.label + " " + u.type).toLowerCase();
       return (!filters.q || hay.includes(filters.q.toLowerCase())) && (!filters.type || u.type === filters.type) && (!filters.max || u.rent <= +filters.max);
     }).sort((a, b) => a.rent - b.rent);
@@ -111,16 +118,16 @@
     const list = myRequests();
     return `<div class="card"><div class="card-head"><h3>My house requests</h3></div>
       ${list.length ? `<div class="table-wrap"><table class="tbl"><thead><tr><th>House</th><th class="num">Rent</th><th>Sent</th><th>Payment</th><th>Status</th><th></th></tr></thead><tbody>
-      ${list.map((r) => { const u = S.unit(r.unitId); return `<tr><td><strong>${esc(u?.label)}</strong> <span class="muted small">· ${esc(propName(u?.propertyId))}</span></td>
-        <td class="num">${S.money(u?.rent)}</td><td>${S.fmtDate(r.date)}</td><td>${r.paid ? '<span class="badge st-occupied">Paid</span>' : '<span class="muted small">Not paid</span>'}</td>
-        <td>${badge(r.status)}</td><td class="actions">${r.status === "pending" ? `${r.paid ? "" : `<a class="btn btn-sm btn-primary" href="pay.html?unit=${u.id}&kind=booking">Pay deposit</a>`}
+      ${list.map((r) => { const u = S.unit(r.unitId); return `<tr><td><strong>${esc(u?.label || "—")}</strong> <span class="muted small">· ${esc(propName(u?.propertyId))}</span></td>
+        <td class="num">${u ? S.money(u.rent) : "—"}</td><td>${S.fmtDate(r.date)}</td><td>${r.paid ? '<span class="badge st-reserved">Reported</span>' : '<span class="muted small">Not paid</span>'}</td>
+        <td>${badge(r.status)}</td><td class="actions">${r.status === "pending" ? `${r.paid || !u || u.status !== "vacant" ? "" : `<a class="btn btn-sm btn-primary" href="pay.html?unit=${u.id}&kind=booking">Pay deposit</a>`}
           <button class="btn btn-sm btn-ghost" data-act="cancelReq" data-id="${r.id}">Cancel</button>` : ""}</td></tr>`; }).join("")}
       </tbody></table></div>` : `<div class="empty">You haven't requested any house yet.<br><a class="btn btn-primary" href="#find">Find a house</a></div>`}</div>`;
   };
 
   views.payments = () => {
-    const list = S.paymentsOf((p) => p.tenantId === me.id);
-    const u = S.tenantUnit(me.id);
+    const list = myPayments();
+    const u = S.myUnit();
     return `<div class="toolbar"><span class="muted">${list.length} payment${list.length === 1 ? "" : "s"}</span><span class="spacer"></span>
         ${u ? `<a class="btn btn-primary btn-sm" href="pay.html?unit=${u.id}&kind=rent">${icon("cash")} Pay rent</a>` : ""}</div>
       <div class="card">${list.length ? `<div class="table-wrap"><table class="tbl"><thead><tr><th>Date</th><th>For</th><th>Method</th><th class="num">Amount</th><th></th></tr></thead><tbody>
@@ -129,35 +136,45 @@
 
   views.notifications = (m) => Shell.notificationsView(m);
 
-  views.profile = () => `<div class="card" style="max-width:560px"><div class="card-head"><h3>My profile</h3></div>
+  views.profile = () => `<div class="two-col"><div class="card"><div class="card-head"><h3>My profile</h3></div>
     <form id="profileForm">
-      <div class="field"><label>Full name</label><input name="name" value="${esc(me.name)}"></div>
-      <div class="field"><label>Phone</label><input name="phone" value="${esc(me.phone)}"><p class="hint">Your landlord sees this number.</p></div>
-      <div class="field"><label>Email</label><input value="${esc(me.email)}" disabled></div>
-      <button class="btn btn-primary" data-act="saveProfile">Save</button></form></div>`;
+      <div class="field"><label>Full name</label><input name="name" maxlength="120" value="${esc(S.me.name)}"></div>
+      <div class="field"><label>Phone</label><input name="phone" maxlength="30" value="${esc(S.me.phone)}"><p class="hint">Your landlord sees this number.</p></div>
+      <div class="field"><label>Email</label><input value="${esc(S.me.email)}" disabled></div>
+      <button class="btn btn-primary" data-act="saveProfile">Save</button></form></div>
+    <div class="card"><div class="card-head"><h3>Link a house</h3></div>
+      <p class="muted">Got an invite code from your landlord? Enter it to see your house, pay rent and give notice.</p>${inviteForm}</div></div>`;
 
   const actions = {
     receipt: (d) => UI.receipt(S.db.payments.find((p) => p.id === d.id)),
     fType: (d, el) => { filters.type = el.value; refresh(); },
     fMax: (d, el) => { filters.max = el.value; refresh(); },
+    claim: async () => {
+      const code = (UI.$("#inviteForm [name=code]").value || "").trim();
+      if (!code) throw new Error("Enter the code from your landlord.");
+      const house = await S.claimInvite(code);
+      toast(house ? "Linked! Welcome to " + house + "." : "Linked to your landlord's record.");
+      location.hash = "home"; refresh();
+    },
     request: (d) => { const u = S.unit(d.unit); const p = S.property(u.propertyId);
       modal("Request " + u.label + " at " + p.name, `
         <p class="muted" style="margin-bottom:14px">${esc(u.type)} · ${S.money(u.rent)}/month · deposit ${S.money(u.deposit)}. The landlord will be notified and can approve your request.</p>
-        <div class="field"><label>Message to landlord (optional)</label><textarea name="message" placeholder="When you'd like to move in, questions, etc."></textarea></div>
-        <p class="hint">Want to secure it now? Use “Book &amp; pay” to pay the deposit — the house is then reserved for you.</p>`,
-      { submitText: "Send request", onSubmit: (f) => { S.requestUnit(me.id, u.id, f.message.trim(), false); toast("Request sent to the landlord."); refresh(); } }); },
-    cancelReq: (d) => confirmBox("Cancel this request?" + (S.db.requests.find((r) => r.id === d.id).paid ? " Your payment will be marked for refund by the landlord." : ""),
-      () => { S.cancelRequest(d.id); toast("Request cancelled."); refresh(); }, "Cancel request"),
-    moveOut: () => { const u = S.tenantUnit(me.id); const min = S.today();
+        <div class="field"><label>Message to landlord (optional)</label><textarea name="message" maxlength="1000" placeholder="When you'd like to move in, questions, etc."></textarea></div>
+        <p class="hint">Want to secure it now? Use “Book &amp; pay” to pay the deposit.</p>`,
+      { submitText: "Send request", onSubmit: async (f) => { await S.requestUnit(u.id, f.message.trim(), "none"); toast("Request sent to the landlord."); refresh(); } }); },
+    cancelReq: (d) => confirmBox("Cancel this request?" + (S.db.requests.find((r) => r.id === d.id)?.paid ? " If you already paid, ask the landlord for a refund." : ""),
+      async () => { await S.cancelRequest(d.id); toast("Request cancelled."); refresh(); }, "Cancel request"),
+    moveOut: () => { const u = S.myUnit(); const min = S.today(); const owed = S.rentStatus(u, S.ym()).balance;
       modal("Give move-out notice", `
         <p class="muted" style="margin-bottom:14px">Your landlord will be notified immediately that you are leaving ${esc(u.label)} at ${esc(propName(u.propertyId))}.</p>
         <div class="field"><label>Moving out on</label><input type="date" name="date" min="${min}" value="${S.addMonths(min, 1)}" required></div>
-        <div class="field"><label>Reason (optional)</label><textarea name="reason" placeholder="e.g. Relocating for work"></textarea></div>
-        ${S.rentStatus(u, S.ym()).balance ? `<p class="alert-box warn small">You still owe ${S.money(S.rentStatus(u, S.ym()).balance)} for this month.</p>` : ""}`,
-      { submitText: "Send notice", onSubmit: (f) => { if (!f.date) throw new Error("Pick a date."); S.giveNotice(me.id, f.date, f.reason.trim()); toast("Notice sent. Your landlord has been notified."); refresh(); } }); },
-    withdraw: (d) => confirmBox("Withdraw your move-out notice and stay?", () => { S.withdrawNotice(d.id); toast("Notice withdrawn."); refresh(); }, "Withdraw"),
-    saveProfile: () => { const f = Object.fromEntries(new FormData(UI.$("#profileForm")));
-      Object.assign(me, { name: f.name.trim() || me.name, phone: f.phone.trim() }); S.save(); toast("Profile saved."); location.reload(); },
+        <div class="field"><label>Reason (optional)</label><textarea name="reason" maxlength="1000" placeholder="e.g. Relocating for work"></textarea></div>
+        ${owed ? `<p class="alert-box warn small">You still owe ${S.money(owed)} for this month.</p>` : ""}`,
+      { submitText: "Send notice", onSubmit: async (f) => { if (!f.date) throw new Error("Pick a date."); await S.giveNotice(u.id, f.date, f.reason.trim()); toast("Notice sent. Your landlord has been notified."); refresh(); } }); },
+    withdraw: (d) => confirmBox("Withdraw your move-out notice and stay?", async () => { await S.withdrawNotice(d.id); toast("Notice withdrawn."); refresh(); }, "Withdraw"),
+    saveProfile: async () => { const f = Object.fromEntries(new FormData(UI.$("#profileForm")));
+      if (!f.name.trim()) throw new Error("Enter your name.");
+      await S.updateProfile({ name: f.name.trim(), phone: f.phone.trim() }); toast("Profile saved."); refresh(); },
   };
 
   const after = {
@@ -170,7 +187,7 @@
     nav: [["home", "My home", "home"], ["find", "Find a house", "search"], ["requests", "My requests", "inbox"],
       ["payments", "Payments & receipts", "receipt"], ["notifications", "Notifications", "bell"], ["profile", "Profile", "users"]],
     views, actions, after,
-    counts: (m) => ({ requests: S.db.requests.filter((r) => r.tenantId === m.id && r.status === "pending").length,
+    counts: (m) => ({ requests: myRequests().filter((r) => r.status === "pending").length,
       notifications: S.notificationsOf(m.id).filter((n) => !n.read).length }),
   });
 })();

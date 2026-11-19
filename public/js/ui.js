@@ -33,6 +33,7 @@ const UI = (() => {
     paid: ["Paid", "st-occupied"], partial: ["Partial", "st-reserved"], unpaid: ["Unpaid", "st-unpaid"], none: ["—", "st-none"],
     pending: ["Pending", "st-reserved"], approved: ["Approved", "st-occupied"], rejected: ["Declined", "st-unpaid"],
     cancelled: ["Cancelled", "st-none"], acknowledged: ["Acknowledged", "st-vacant"], completed: ["Completed", "st-none"],
+    confirmed: ["Confirmed", "st-occupied"], refunded: ["Refunded", "st-none"], awaiting: ["Awaiting confirmation", "st-reserved"],
   };
   const badge = (s) => { const [t, c] = STATUS[s] || [s, "st-none"]; return `<span class="badge ${c}">${esc(t)}</span>`; };
 
@@ -63,13 +64,18 @@ const UI = (() => {
     document.body.classList.add("no-scroll");
     const form = $("form", wrap);
     wrap.addEventListener("click", (e) => { if (e.target === wrap || e.target.closest("[data-close]")) closeModal(); });
-    form.addEventListener("submit", (e) => {
+    form.addEventListener("submit", async (e) => {
       e.preventDefault();
-      if (!onSubmit) return;
+      if (!onSubmit || form.dataset.busy) return;
       const data = Object.fromEntries(new FormData(form).entries());
       $$("input[type=checkbox]", form).forEach((c) => (data[c.name] = c.checked));
-      try { if (onSubmit(data, form) !== false) closeModal(); }
+      const btn = $("button[type=submit]", form);
+      const label = btn ? btn.textContent : "";
+      form.dataset.busy = "1";
+      if (btn) { btn.disabled = true; btn.textContent = "Please wait…"; }
+      try { if ((await onSubmit(data, form)) !== false && wrap.isConnected) closeModal(); }
       catch (err) { toast(err.message, "err"); }
+      finally { delete form.dataset.busy; if (btn && btn.isConnected) { btn.disabled = false; btn.textContent = label; } }
     });
     const first = $("input,select,textarea", form);
     if (first) setTimeout(() => first.focus(), 30);
@@ -82,19 +88,23 @@ const UI = (() => {
   document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeModal(); });
 
   function confirmBox(text, onYes, yesText = "Yes, continue") {
-    modal("Please confirm", `<p class="muted">${esc(text)}</p>`, { submitText: yesText, onSubmit: () => { onYes(); } });
+    modal("Please confirm", `<p class="muted">${esc(text)}</p>`, { submitText: yesText, onSubmit: async () => { await onYes(); } });
   }
 
   /* ---------- receipt ---------- */
   function receipt(p) {
-    const u = Store.unit(p.unitId) || { label: "(removed)" };
+    const u = Store.unit(p.unitId) || { label: p.unitLabel || "(removed)" };
     const prop = Store.property(p.propertyId) || { name: "(removed)", location: "" };
     const t = Store.user(p.tenantId) || { name: "—", phone: "" };
     const ll = Store.user(prop.landlordId) || { name: "" };
-    const kind = { rent: "Rent — " + Store.monthLabel(p.month), deposit: "Security deposit", booking: "Booking fee" }[p.kind];
-    modal("Receipt " + p.receiptNo, `
+    const kind = { rent: "Rent — " + Store.monthLabel(p.month), deposit: "Security deposit" }[p.kind];
+    const official = p.status === "confirmed";
+    modal((official ? "Receipt " : "Payment ") + p.receiptNo, `
+      ${official ? "" : `<div class="alert-box ${p.status === "pending" ? "warn" : "danger"} small">${p.status === "pending"
+        ? "Waiting for the landlord to confirm this payment. The official receipt appears once it is confirmed."
+        : "This payment was " + esc(p.status) + ". It is not a valid receipt."}</div>`}
       <div class="receipt" id="receipt">
-        <div class="r-head"><span class="logo-mark sm">${LOGO}</span><div><strong>TrackGimex</strong><br><span class="muted">Official payment receipt</span></div>
+        <div class="r-head"><span class="logo-mark sm">${LOGO}</span><div><strong>TrackGimex</strong><br><span class="muted">${official ? "Official payment receipt" : "Payment record — not confirmed"}</span></div>
           <div class="r-no"><span class="muted">Receipt No.</span><br><strong>${esc(p.receiptNo)}</strong></div></div>
         <table class="r-table">
           <tr><td>Date</td><td>${new Date(p.date).toLocaleString("en-GB")}</td></tr>
@@ -105,9 +115,8 @@ const UI = (() => {
           <tr><td>Method</td><td>${esc(p.method)} ${p.ref ? "· Ref " + esc(p.ref) : ""}</td></tr>
           <tr class="r-total"><td>Amount</td><td>${Store.money(p.amount)}</td></tr>
         </table>
-        ${p.refunded ? '<p class="badge st-unpaid">Refunded</p>' : ""}
         <p class="muted small">Landlord / Agent: ${esc(ll.name)} · Thank you for your payment.</p>
-      </div>`, { footer: `<button type="button" class="btn btn-primary" onclick="window.print()">Print / Save PDF</button>` });
+      </div>`, { footer: official ? `<button type="button" class="btn btn-primary" onclick="window.print()">Print / Save PDF</button>` : "" });
   }
 
   /* ---------- CSV export ---------- */
@@ -131,5 +140,10 @@ const UI = (() => {
   /* fill any element with data-logo */
   document.addEventListener("DOMContentLoaded", () => $$("[data-logo]").forEach((el) => (el.innerHTML = LOGO)));
 
-  return { esc, $, $$, LOGO, icon, badge, toast, modal, closeModal, confirmBox, receipt, downloadCSV, timeAgo };
+  /* full-page loading / error states */
+  const loading = (text = "Loading…") => `<div class="page-state"><div class="spinner"></div><p class="muted">${esc(text)}</p></div>`;
+  const failed = (msg) => `<div class="page-state"><h2>Something went wrong</h2><p class="muted">${esc(msg)}</p>
+    <button class="btn btn-primary" onclick="location.reload()">Try again</button></div>`;
+
+  return { esc, $, $$, LOGO, icon, badge, toast, modal, closeModal, confirmBox, receipt, downloadCSV, timeAgo, loading, failed };
 })();

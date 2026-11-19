@@ -20,7 +20,7 @@
 
     <main class="auth-main">
       <div class="auth-card">
-        <div class="tabs" role="tablist">
+        <div class="tabs" role="tablist" id="roleTabs">
           <button type="button" data-role="landlord" class="active">Landlord / Agent</button>
           <button type="button" data-role="tenant">Tenant</button>
         </div>
@@ -32,76 +32,115 @@
           <div class="field"><label for="le">Email</label><input id="le" name="email" type="email" autocomplete="email" required></div>
           <div class="field"><label for="lp">Password</label><input id="lp" name="password" type="password" autocomplete="current-password" required></div>
           <button class="btn btn-primary btn-block" type="submit">Log in</button>
+          <p class="switch-link" style="margin-top:12px"><button type="button" data-mode="forgot">Forgot password?</button></p>
         </form>
 
         <form id="registerForm" novalidate hidden>
-          <div class="field"><label for="rn">Full name</label><input id="rn" name="name" required></div>
+          <div class="field"><label for="rn">Full name</label><input id="rn" name="name" maxlength="120" autocomplete="name" required></div>
           <div class="field" id="kindField">
             <label for="rk">I am a</label>
             <select id="rk" name="kind"><option>Landlord</option><option>Agent</option><option>Caretaker</option></select>
           </div>
           <div class="field-row">
-            <div class="field"><label for="re">Email</label><input id="re" name="email" type="email" required></div>
-            <div class="field"><label for="rph">Phone</label><input id="rph" name="phone" placeholder="07XX XXX XXX"></div>
+            <div class="field"><label for="re">Email</label><input id="re" name="email" type="email" autocomplete="email" required></div>
+            <div class="field"><label for="rph">Phone</label><input id="rph" name="phone" maxlength="30" placeholder="07XX XXX XXX" autocomplete="tel"></div>
           </div>
-          <div class="field"><label for="rp">Password</label><input id="rp" name="password" type="password" minlength="6" required>
-            <p class="hint" id="regHint">At least 6 characters.</p></div>
+          <div class="field"><label for="rp">Password</label><input id="rp" name="password" type="password" minlength="8" autocomplete="new-password" required>
+            <p class="hint">At least 8 characters.</p></div>
+          <label class="check small" style="margin-bottom:16px"><input type="checkbox" name="agree" required> I agree to the terms of use and privacy policy</label>
           <button class="btn btn-primary btn-block" type="submit">Create account</button>
         </form>
 
-        <p class="switch-link" id="switchLine"></p>
+        <form id="forgotForm" novalidate hidden>
+          <div class="field"><label for="fe">Email</label><input id="fe" name="email" type="email" autocomplete="email" required></div>
+          <button class="btn btn-primary btn-block" type="submit">Send reset link</button>
+        </form>
 
-        <div class="demo-box" id="demoBox"></div>
+        <form id="recoveryForm" novalidate hidden>
+          <div class="field"><label for="np">New password</label><input id="np" name="password" type="password" minlength="8" autocomplete="new-password" required>
+            <p class="hint">At least 8 characters.</p></div>
+          <button class="btn btn-primary btn-block" type="submit">Save new password</button>
+        </form>
+
+        <div id="sentBox" class="alert-box info" hidden></div>
+        <p class="switch-link" id="switchLine"></p>
       </div>
     </main>
   </div>
 
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.118.0/dist/umd/supabase.js"></script>
+  <script src="js/config.js"></script>
   <script src="js/store.js"></script>
   <script src="js/ui.js"></script>
   <script>
     const params = new URLSearchParams(location.search);
     let role = params.get("role") === "tenant" ? "tenant" : "landlord";
-    let mode = params.get("mode") === "register" ? "register" : "login";
-    const next = params.get("next");
+    let mode = ["register", "forgot", "recovery"].includes(params.get("mode")) ? params.get("mode") : "login";
+    // only allow redirects to our own pages
+    const nextParam = params.get("next") || "";
+    const next = /^(landlord|tenant|pay)\.html([?#].*)?$/.test(nextParam) ? nextParam : "";
 
     function render() {
       UI.$$(".tabs button").forEach(b => b.classList.toggle("active", b.dataset.role === role));
-      UI.$("#loginForm").hidden = mode !== "login";
-      UI.$("#registerForm").hidden = mode !== "register";
+      UI.$("#roleTabs").hidden = mode === "forgot" || mode === "recovery";
+      for (const m of ["login", "register", "forgot", "recovery"]) UI.$("#" + m + "Form").hidden = mode !== m;
+      UI.$("#sentBox").hidden = true;
       UI.$("#kindField").hidden = role !== "landlord";
       const L = role === "landlord";
-      UI.$("#title").textContent = mode === "login" ? "Welcome back" : (L ? "Create landlord / agent account" : "Create tenant account");
-      UI.$("#subtitle").textContent = L
-        ? (mode === "login" ? "Log in to manage your properties." : "Add your buildings and start tracking rent today.")
-        : (mode === "login" ? "Log in to pay rent, find a house or give notice." : "Find empty houses, book and pay rent online.");
-      UI.$("#regHint").textContent = L ? "At least 6 characters." : "At least 6 characters. Use the phone number your landlord has, so your house is linked automatically.";
+      UI.$("#title").textContent = { login: "Welcome back", forgot: "Reset your password", recovery: "Choose a new password",
+        register: L ? "Create landlord / agent account" : "Create tenant account" }[mode];
+      UI.$("#subtitle").textContent = mode === "forgot" ? "We'll email you a link to set a new password."
+        : mode === "recovery" ? "Enter a new password for your account."
+        : L ? (mode === "login" ? "Log in to manage your properties." : "Add your buildings and start tracking rent today.")
+            : (mode === "login" ? "Log in to pay rent, find a house or give notice." : "Find empty houses, book and pay rent online.");
       UI.$("#sideEyebrow").textContent = L ? "Landlords & agents" : "Tenants";
       UI.$("#sideTitle").innerHTML = L ? 'Every property, tenant and shilling — <span class="green">tracked.</span>'
         : 'Find your next home and pay rent — <span class="green">in minutes.</span>';
       UI.$("#switchLine").innerHTML = mode === "login"
         ? 'New to TrackGimex? <button type="button" data-mode="register">Create an account</button>'
-        : 'Already have an account? <button type="button" data-mode="login">Log in</button>';
-      UI.$("#demoBox").innerHTML = L
-        ? 'Demo landlord: <code>landlord@demo.com</code> / <code>demo123</code>'
-        : 'Demo tenants: <code>tenant@demo.com</code> (has a house) or <code>mercy@demo.com</code> (house hunting) — password <code>demo123</code>';
+        : mode === "recovery" ? "" : 'Already have an account? <button type="button" data-mode="login">Log in</button>';
     }
     UI.$$(".tabs button").forEach(b => b.onclick = () => { role = b.dataset.role; render(); });
-    UI.$("#switchLine").onclick = e => { const m = e.target.dataset.mode; if (m) { mode = m; render(); } };
+    document.addEventListener("click", e => { const m = e.target.dataset && e.target.dataset.mode; if (m) { mode = m; render(); } });
+    const sent = (html) => { UI.$$("form").forEach(f => f.hidden = true); const b = UI.$("#sentBox"); b.innerHTML = html; b.hidden = false; };
 
+    async function busy(form, fn) {
+      const btn = form.querySelector("button[type=submit]"); const t = btn.textContent;
+      btn.disabled = true; btn.textContent = "Please wait…";
+      try { await fn(); } catch (err) { UI.toast(err.message, "err"); }
+      finally { btn.disabled = false; btn.textContent = t; }
+    }
     const go = u => location.href = next || (u.role === "landlord" ? "landlord.html" : "tenant.html");
-    UI.$("#loginForm").onsubmit = e => {
-      e.preventDefault();
-      const f = new FormData(e.target);
-      try { go(Store.login(f.get("email"), f.get("password"), role)); }
-      catch (err) { UI.toast(err.message, "err"); }
-    };
+
+    UI.$("#loginForm").onsubmit = e => { e.preventDefault(); const f = new FormData(e.target);
+      busy(e.target, async () => go(await Store.login(f.get("email"), f.get("password"), role))); };
+
     UI.$("#registerForm").onsubmit = e => {
       e.preventDefault();
       const f = Object.fromEntries(new FormData(e.target));
       if (!/^\S+@\S+\.\S+$/.test(f.email)) return UI.toast("Please enter a valid email.", "err");
-      try { go(Store.register({ ...f, role })); }
-      catch (err) { UI.toast(err.message, "err"); }
+      if (!e.target.agree.checked) return UI.toast("Please accept the terms to continue.", "err");
+      busy(e.target, async () => {
+        const r = await Store.register({ ...f, role });
+        if (r.needsConfirmation) sent(`<strong>Check your email.</strong> We sent a confirmation link to <strong>${UI.esc(f.email)}</strong>. Click it, then log in here. (Check your spam folder too.)`);
+        else go(r.profile);
+      });
     };
+
+    UI.$("#forgotForm").onsubmit = e => { e.preventDefault(); const email = new FormData(e.target).get("email");
+      busy(e.target, async () => { await Store.resetPassword(email);
+        sent(`If an account exists for <strong>${UI.esc(email)}</strong>, we've sent a link to reset the password. Check your inbox and spam folder.`); }); };
+
+    UI.$("#recoveryForm").onsubmit = e => { e.preventDefault(); const pw = new FormData(e.target).get("password");
+      if (pw.length < 8) return UI.toast("Password must be at least 8 characters.", "err");
+      busy(e.target, async () => { await Store.updatePassword(pw); const p = await Store.init();
+        UI.toast("Password updated."); if (p) go(p); else { mode = "login"; render(); } }); };
+
+    // The reset-password email link logs the user in and lands here.
+    Store.onAuth((event) => { if (event === "PASSWORD_RECOVERY") { mode = "recovery"; render(); } });
+    // Error from an expired/used email link (Supabase puts it in the URL hash)
+    const hash = new URLSearchParams(location.hash.slice(1));
+    if (hash.get("error_description")) setTimeout(() => UI.toast(hash.get("error_description").replace(/\+/g, " ") + ". Please try again.", "err"), 200);
     render();
   </script>
 </body>

@@ -287,6 +287,9 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: .9rem; min-width:
 @keyframes spin { to { transform: rotate(360deg); } }
 .success-ic { width: 64px; height: 64px; border-radius: 50%; background: var(--green); color: #04150d; display: grid; place-items: center; margin: 0 auto 16px; font-size: 2rem; font-weight: 800; }
 
+.page-state { min-height: 70vh; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; text-align: center; padding: 24px; }
+.code-box { font: 800 1.8rem/1 ui-monospace, Menlo, Consolas, monospace; letter-spacing: .18em; background: var(--surface-2); border: 1px dashed var(--green); color: var(--green); border-radius: 12px; padding: 18px; text-align: center; margin: 12px 0; }
+
 /* ---------- receipt ---------- */
 .receipt { background: #fff; color: #111; border-radius: 12px; padding: 22px; }
 .receipt .muted { color: #666; }

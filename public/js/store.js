@@ -1,441 +1,281 @@
 /* ==========================================================
-   TrackGimex — data store
-   All data is saved in the browser (localStorage). This makes the
-   site work with no server: perfect for a demo or a single computer.
-   To use it across many phones/computers, swap these functions for
-   calls to a real backend (Firebase, Supabase, Node/PHP + MySQL).
+   TrackGimex — data store (Supabase)
+   The pages read from a local copy of the user's data (Store.db),
+   loaded after login and refreshed after every change. All changes go
+   to the server; the database rules decide what each user may do.
    ========================================================== */
 const Store = (() => {
-  const KEY = "trackgimex_db_v2";
-  const SESSION_KEY = "trackgimex_session";
+  const sb = window.supabase.createClient(TG_CONFIG.supabaseUrl, TG_CONFIG.supabaseKey, {
+    auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true },
+  });
 
   /* ---------- helpers ---------- */
-  const uid = (p) => p + "_" + Math.random().toString(36).slice(2, 8) + Date.now().toString(36).slice(-4);
-  const today = () => new Date().toISOString().slice(0, 10);
-  const nowISO = () => new Date().toISOString();
-  const ym = (d = new Date()) => {
-    const x = typeof d === "string" ? new Date(d) : d;
-    return x.getFullYear() + "-" + String(x.getMonth() + 1).padStart(2, "0");
-  };
-  const addMonths = (dateStr, n) => {
-    const d = new Date(dateStr);
-    d.setMonth(d.getMonth() + n);
-    return d.toISOString().slice(0, 10);
-  };
-  // Simple (non-cryptographic) hash so plain passwords are not stored.
-  // A real deployment must hash passwords on a server.
-  const hash = (s) => {
-    let h = 5381;
-    const str = "tg$" + s;
-    for (let i = 0; i < str.length; i++) h = ((h << 5) + h + str.charCodeAt(i)) >>> 0;
-    return "h" + h.toString(16);
-  };
+  const pad = (n) => String(n).padStart(2, "0");
+  const today = () => { const d = new Date(); return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()); };
+  const ym = (d = new Date()) => { const x = typeof d === "string" ? new Date(d) : d; return x.getFullYear() + "-" + pad(x.getMonth() + 1); };
+  const addMonths = (dateStr, n) => { const d = new Date(dateStr); d.setMonth(d.getMonth() + n); return d.toISOString().slice(0, 10); };
 
-  /* ---------- persistence ---------- */
-  let db;
-  function emptyDb() {
-    return { users: [], properties: [], units: [], payments: [], requests: [],
-      notices: [], notifications: [], expenses: [], checks: [], seq: 1000 };
+  function friendly(error) {
+    const m = (error && (error.message || error.error_description)) || String(error);
+    if (/Failed to fetch|NetworkError|Load failed/i.test(m)) return "No internet connection. Please check your network and try again.";
+    if (/JWT|session|refresh token/i.test(m)) return "Your session has expired. Please log in again.";
+    if (/Invalid login credentials/i.test(m)) return "Wrong email or password.";
+    if (/Email not confirmed/i.test(m)) return "Please confirm your email first — check your inbox for the link we sent.";
+    if (/User already registered/i.test(m)) return "An account with this email already exists. Log in instead.";
+    if (/rate limit|too many/i.test(m)) return "Too many attempts. Please wait a few minutes and try again.";
+    if (/duplicate key value.*label/i.test(m)) return "Another house in this building already uses that label.";
+    if (/row-level security|permission denied/i.test(m)) return "You are not allowed to do that.";
+    return m;
   }
-  function load() {
-    try {
-      const raw = localStorage.getItem(KEY);
-      if (raw) { const d = JSON.parse(raw); if (d && d.users) return d; }
-    } catch (e) { /* storage blocked or corrupt */ }
-    return null;
+  async function run(promise) {
+    const { data, error } = await promise;
+    if (error) throw new Error(friendly(error));
+    return data;
   }
-  function save() {
-    try { localStorage.setItem(KEY, JSON.stringify(db)); } catch (e) { console.warn("Could not save", e); }
-  }
-  function reset() { db = seed(); save(); }
-
-  /* ---------- demo data ---------- */
-  function seed() {
-    const d = emptyDb();
-    const L = { id: "u_landlord", role: "landlord", kind: "Landlord", name: "Jane Wanjiku", email: "landlord@demo.com",
-      phone: "0712345678", pass: hash("demo123"), createdAt: nowISO() };
-    const T = { id: "u_tenant", role: "tenant", name: "Brian Otieno", email: "tenant@demo.com",
-      phone: "0722000111", pass: hash("demo123"), createdAt: nowISO() };
-    const T2 = { id: "u_tenant2", role: "tenant", name: "Mercy Akinyi", email: "mercy@demo.com",
-      phone: "0733222444", pass: hash("demo123"), createdAt: nowISO() };
-    d.users.push(L, T, T2);
-
-    const offline = ["Peter Kamau", "Faith Njeri", "John Mwangi", "Grace Achieng", "Samuel Kiptoo",
-      "Ann Mutua", "David Ochieng", "Lucy Wairimu"];
-    offline.forEach((n, i) => d.users.push({ id: "u_off" + i, role: "tenant", name: n,
-      email: "", phone: "07" + (10000000 + i * 1234567).toString().slice(0, 8), pass: null, offline: true, createdAt: nowISO() }));
-
-    const p1 = { id: "p_sunrise", landlordId: L.id, name: "Sunrise Apartments", location: "Kasarani, Nairobi",
-      description: "Modern apartments 5 minutes from Thika Road. Water, security and parking.", createdAt: nowISO() };
-    const p2 = { id: "p_green", landlordId: L.id, name: "Green Court", location: "Ruiru, Kiambu",
-      description: "Quiet gated court with bedsitters and one bedrooms.", createdAt: nowISO() };
-    d.properties.push(p1, p2);
-
-    const thisMonth = ym();
-    const lastMonth = ym(new Date(new Date().setMonth(new Date().getMonth() - 1)));
-    const start = addMonths(today(), -8);
-
-    const mk = (prop, label, type, rent, deposit, status, tenantId, leaseStart) => {
-      const u = { id: uid("un"), propertyId: prop.id, label, type, rent, deposit, status, tenantId: tenantId || null,
-        leaseStart: leaseStart || null, leaseEnd: leaseStart ? addMonths(leaseStart, 12) : null };
-      d.units.push(u);
-      return u;
-    };
-    const s = [];
-    for (let i = 1; i <= 10; i++) {
-      const label = "A" + i;
-      const type = i <= 4 ? "1 Bedroom" : i <= 8 ? "2 Bedroom" : "Bedsitter";
-      const rent = type === "1 Bedroom" ? 15000 : type === "2 Bedroom" ? 22000 : 9000;
-      let tenant = null, status = "vacant", ls = null;
-      if (i === 1) { tenant = T.id; status = "occupied"; ls = start; }
-      else if (i <= 7) { tenant = "u_off" + (i - 2); status = "occupied"; ls = addMonths(today(), -(i + 1)); }
-      if (i === 8) status = "maintenance";
-      s.push(mk(p1, label, type, rent, rent, status, tenant, ls));
+  const rpc = (fn, args) => run(sb.rpc(fn, args));
+  // PostgREST returns at most 1000 rows per request: page through everything
+  async function all(build) {
+    const out = [];
+    for (let from = 0; ; from += 1000) {
+      const rows = await run(build().range(from, from + 999));
+      out.push(...rows);
+      if (rows.length < 1000) return out;
     }
-    for (let i = 1; i <= 6; i++) {
-      const type = i <= 3 ? "Bedsitter" : "1 Bedroom";
-      const rent = type === "Bedsitter" ? 7500 : 12000;
-      let tenant = null, status = "vacant", ls = null;
-      if (i <= 2) { tenant = "u_off" + (5 + i); status = "occupied"; ls = addMonths(today(), -4); }
-      s.push(mk(p2, "G" + i, type, rent, rent, status, tenant, ls));
-    }
-    // one lease about to expire, for the renewals view
-    s[3].leaseEnd = addMonths(today(), 1);
-
-    let seq = 1000;
-    const pay = (u, kind, month, amount, method, daysAgo) => {
-      const date = new Date(); date.setDate(date.getDate() - daysAgo);
-      d.payments.push({ id: uid("pay"), receiptNo: "TG-" + (++seq), unitId: u.id, propertyId: u.propertyId,
-        tenantId: u.tenantId, kind, month, amount, method, ref: method === "M-Pesa" ? "SK" + Math.random().toString(36).slice(2, 10).toUpperCase() : "",
-        date: date.toISOString(), recordedBy: method === "Cash" ? L.id : u.tenantId });
-    };
-    s.filter((u) => u.tenantId).forEach((u, i) => {
-      // deposit at move-in, then full rent for every past month of the lease
-      const moved = Math.round((Date.now() - new Date(u.leaseStart)) / 86400000);
-      pay(u, "deposit", null, u.deposit, "M-Pesa", moved);
-      for (let m = Math.floor(moved / 30); m >= 2; m--) {
-        const d = new Date(); d.setDate(1); d.setMonth(d.getMonth() - m);
-        pay(u, "rent", ym(d), u.rent, i % 3 ? "M-Pesa" : "Cash", m * 30);
-      }
-      pay(u, "rent", lastMonth, u.rent, i % 3 ? "M-Pesa" : "Cash", 30 + i);
-      if (i % 3 === 0) pay(u, "rent", thisMonth, u.rent, "M-Pesa", 3);
-      else if (i % 3 === 1) pay(u, "rent", thisMonth, Math.round(u.rent / 2), "M-Pesa", 2);
-    });
-    d.seq = seq;
-
-    d.expenses.push(
-      { id: uid("ex"), landlordId: L.id, propertyId: p1.id, category: "Repairs", amount: 4500, date: today(), note: "Plumbing in A8" },
-      { id: uid("ex"), landlordId: L.id, propertyId: p1.id, category: "Security", amount: 12000, date: today(), note: "Guard salary" },
-      { id: uid("ex"), landlordId: L.id, propertyId: p2.id, category: "Water", amount: 3200, date: today(), note: "Water bill" }
-    );
-
-    // a pending request by Mercy for A9
-    d.requests.push({ id: uid("rq"), unitId: s[8].id, tenantId: T2.id, status: "pending", paid: false,
-      message: "Hello, I would like to move in at the start of next month.", date: nowISO() });
-
-    d.notifications.push(
-      { id: uid("nt"), userId: L.id, text: "Mercy Akinyi requested house A9 at Sunrise Apartments.", date: nowISO(), read: false, link: "requests" },
-      { id: uid("nt"), userId: T.id, text: "Welcome to TrackGimex! Your house A1 at Sunrise Apartments is linked to your account.", date: nowISO(), read: false, link: "home" }
-    );
-    return d;
+  }
+  const chunks = (arr, n = 150) => { const r = []; for (let i = 0; i < arr.length; i += n) r.push(arr.slice(i, i + n)); return r; };
+  async function allIn(table, col, ids, select = "*") {
+    if (!ids.length) return [];
+    const parts = await Promise.all(chunks([...new Set(ids)]).map((c) => all(() => sb.from(table).select(select).in(col, c))));
+    return parts.flat();
   }
 
-  db = load() || seed();
-  if (!load()) save();
+  /* ---------- row mappers (database → page objects) ---------- */
+  const mapProperty = (r) => ({ id: r.id, landlordId: r.landlord_id, name: r.name, location: r.location, description: r.description });
+  const mapUnit = (r) => ({ id: r.id, propertyId: r.property_id, label: r.label, type: r.type, rent: r.rent, deposit: r.deposit,
+    status: r.status, tenantId: r.tenant_id, leaseStart: r.lease_start, leaseEnd: r.lease_end });
+  const mapTenant = (r) => ({ id: r.id, role: "tenant", name: r.name, phone: r.phone, email: r.email, userId: r.user_id,
+    hasAccount: !!r.user_id, landlordId: r.landlord_id, inviteCode: r.invite_code });
+  const mapLandlord = (r) => ({ id: r.id, role: "landlord", kind: r.kind, name: r.name, phone: r.phone, payoutInfo: r.payout_info || "" });
+  const mapPayment = (r) => ({ id: r.id, receiptNo: "TG-" + r.receipt_no, landlordId: r.landlord_id, propertyId: r.property_id,
+    unitId: r.unit_id, unitLabel: r.unit_label, tenantId: r.tenant_id, kind: r.kind, month: r.month, amount: r.amount,
+    method: r.method, ref: r.ref, status: r.status, recordedBy: r.recorded_by, date: r.created_at });
+  const mapRequest = (r) => ({ id: r.id, unitId: r.unit_id, tenantId: r.tenant_id, landlordId: r.landlord_id, status: r.status,
+    message: r.message, paid: r.paid, date: r.created_at });
+  const mapNotice = (r) => ({ id: r.id, unitId: r.unit_id, tenantId: r.tenant_id, landlordId: r.landlord_id,
+    moveOutDate: r.move_out_date, reason: r.reason, status: r.status, date: r.created_at });
+  const mapNote = (r) => ({ id: r.id, userId: r.user_id, text: r.text, link: r.link, read: r.read, date: r.created_at });
+  const mapExpense = (r) => ({ id: r.id, landlordId: r.landlord_id, propertyId: r.property_id, category: r.category,
+    amount: r.amount, date: r.date, note: r.note });
+  const mapCheck = (r) => ({ id: r.id, propertyId: r.property_id, month: r.month, items: r.items, date: r.created_at });
 
-  /* ---------- session / auth ---------- */
-  function currentUser() {
-    let id = null;
-    try { id = localStorage.getItem(SESSION_KEY); } catch (e) {}
-    return db.users.find((u) => u.id === id) || null;
+  /* ---------- state ---------- */
+  const empty = () => ({ users: [], properties: [], units: [], payments: [], requests: [], notices: [], notifications: [], expenses: [], checks: [] });
+  let db = empty();
+  let me = null;           // { id, role, kind, name, phone, email, payoutInfo, tenantIds[] }
+  const listeners = [];
+
+  async function loadProfile() {
+    const { data: { session } } = await sb.auth.getSession();
+    if (!session) { me = null; return null; }
+    const p = await run(sb.from("profiles").select("id, role, kind, name, phone, payout_info").eq("id", session.user.id).maybeSingle());
+    if (!p) { me = null; return null; }
+    me = { id: p.id, role: p.role, kind: p.kind, name: p.name, phone: p.phone, payoutInfo: p.payout_info || "", email: session.user.email, tenantIds: [] };
+    return me;
   }
-  function login(email, password, role) {
-    const u = db.users.find((x) => x.email && x.email.toLowerCase() === email.trim().toLowerCase());
-    if (!u || u.pass !== hash(password)) throw new Error("Wrong email or password.");
-    if (u.role !== role) throw new Error(role === "landlord"
-      ? "This is a tenant account. Use the Tenant tab to log in."
-      : "This is a landlord/agent account. Use the Landlord / Agent tab to log in.");
-    try { localStorage.setItem(SESSION_KEY, u.id); } catch (e) {}
-    return u;
-  }
-  function register({ name, email, phone, password, role, kind }) {
-    if (!name || !email || !password) throw new Error("Please fill in name, email and password.");
-    if (password.length < 6) throw new Error("Password must be at least 6 characters.");
-    if (db.users.some((x) => x.email && x.email.toLowerCase() === email.trim().toLowerCase()))
-      throw new Error("An account with this email already exists. Log in instead.");
-    // A landlord may have added this tenant offline by phone; link them.
-    let u = role === "tenant" && phone ? db.users.find((x) => x.offline && normPhone(x.phone) === normPhone(phone)) : null;
-    if (u) {
-      Object.assign(u, { name, email: email.trim(), pass: hash(password), offline: false });
+
+  async function load() {
+    if (!me) return;
+    const d = empty();
+    if (me.role === "landlord") {
+      const props = await all(() => sb.from("properties").select("*").eq("landlord_id", me.id).order("created_at"));
+      d.properties = props.map(mapProperty);
+      const [units, tenants, pays, reqs, notices, notes, ex, checks] = await Promise.all([
+        allIn("units", "property_id", d.properties.map((p) => p.id)),
+        all(() => sb.from("tenants").select("*")),
+        all(() => sb.from("payments").select("*").eq("landlord_id", me.id).order("created_at", { ascending: false })),
+        all(() => sb.from("house_requests").select("*").eq("landlord_id", me.id)),
+        all(() => sb.from("move_out_notices").select("*").eq("landlord_id", me.id)),
+        run(sb.from("notifications").select("*").eq("user_id", me.id).order("created_at", { ascending: false }).limit(300)),
+        all(() => sb.from("expenses").select("*").eq("landlord_id", me.id)),
+        all(() => sb.from("monthly_checks").select("*").eq("landlord_id", me.id)),
+      ]);
+      d.units = units.map(mapUnit);
+      d.users = tenants.map(mapTenant).concat([mapLandlord({ ...me, payout_info: me.payoutInfo })]);
+      Object.assign(d, { payments: pays.map(mapPayment), requests: reqs.map(mapRequest), notices: notices.map(mapNotice),
+        notifications: notes.map(mapNote), expenses: ex.map(mapExpense), checks: checks.map(mapCheck) });
     } else {
-      u = { id: uid("u"), role, kind: role === "landlord" ? (kind || "Landlord") : undefined, name: name.trim(),
-        email: email.trim(), phone: phone || "", pass: hash(password), createdAt: nowISO() };
-      db.users.push(u);
+      const [tenants, units, pays, reqs, notices, notes] = await Promise.all([
+        all(() => sb.from("tenants").select("*")),
+        all(() => sb.from("units").select("*")),     // own house(s), requested houses, and every vacant house
+        all(() => sb.from("payments").select("*").order("created_at", { ascending: false })),
+        all(() => sb.from("house_requests").select("*")),
+        all(() => sb.from("move_out_notices").select("*")),
+        run(sb.from("notifications").select("*").eq("user_id", me.id).order("created_at", { ascending: false }).limit(300)),
+      ]);
+      me.tenantIds = tenants.filter((t) => t.user_id === me.id).map((t) => t.id);
+      d.units = units.map(mapUnit);
+      d.properties = (await allIn("properties", "id", d.units.map((u) => u.propertyId))).map(mapProperty);
+      const landlords = await allIn("profiles", "id", d.properties.map((p) => p.landlordId), "id, role, kind, name, phone, payout_info");
+      d.users = tenants.map(mapTenant).concat(landlords.map(mapLandlord));
+      Object.assign(d, { payments: pays.map(mapPayment), requests: reqs.map(mapRequest), notices: notices.map(mapNotice),
+        notifications: notes.map(mapNote) });
     }
-    save();
-    try { localStorage.setItem(SESSION_KEY, u.id); } catch (e) {}
-    return u;
+    db = d;
   }
-  function logout() { try { localStorage.removeItem(SESSION_KEY); } catch (e) {} }
-  const normPhone = (p) => String(p || "").replace(/\D/g, "").replace(/^254/, "0").replace(/^7/, "07").replace(/^1/, "01");
 
-  /* ---------- lookups ---------- */
+  let channel = null;
+  function subscribe() {
+    if (channel || !me) return;
+    channel = sb.channel("notes-" + me.id)
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "notifications", filter: "user_id=eq." + me.id }, async (msg) => {
+        try { await load(); } catch (e) { /* keep old data */ }
+        listeners.forEach((fn) => fn(msg.new));
+      })
+      .subscribe();
+  }
+
+  /** Start a page: returns the logged-in profile (or null) with data loaded. */
+  async function init() {
+    await loadProfile();
+    if (me) { await load(); subscribe(); }
+    return me;
+  }
+  const onChange = (fn) => listeners.push(fn);
+  async function refresh() { await load(); }
+
+  /* ---------- auth ---------- */
+  async function login(email, password, role) {
+    await run(sb.auth.signInWithPassword({ email: email.trim(), password }));
+    const p = await loadProfile();
+    if (!p) { await sb.auth.signOut(); throw new Error("This account has no profile. Please contact support."); }
+    if (p.role !== role) {
+      await sb.auth.signOut();
+      throw new Error(role === "landlord" ? "This is a tenant account. Use the Tenant tab to log in."
+        : "This is a landlord/agent account. Use the Landlord / Agent tab to log in.");
+    }
+    return p;
+  }
+  async function register({ name, email, phone, password, role, kind }) {
+    if (!name || !email || !password) throw new Error("Please fill in name, email and password.");
+    if (password.length < 8) throw new Error("Password must be at least 8 characters.");
+    const data = await run(sb.auth.signUp({
+      email: email.trim(), password,
+      options: { data: { role, kind, name: name.trim(), phone: (phone || "").trim() }, emailRedirectTo: new URL("login.html?role=" + role, location.href).href },
+    }));
+    // When email confirmation is ON, Supabase returns no session yet.
+    if (!data.session) return { needsConfirmation: true };
+    return { needsConfirmation: false, profile: await loadProfile() };
+  }
+  async function logout() { try { await sb.auth.signOut(); } catch (e) {} me = null; }
+  const resetPassword = (email) => run(sb.auth.resetPasswordForEmail(email.trim(), { redirectTo: new URL("login.html?mode=recovery", location.href).href }));
+  const updatePassword = (password) => run(sb.auth.updateUser({ password }));
+  const onAuth = (fn) => sb.auth.onAuthStateChange(fn);
+  async function updateProfile(f) {
+    const row = { name: f.name, phone: f.phone };
+    if (me.role === "landlord") { row.kind = f.kind; row.payout_info = f.payoutInfo || ""; }
+    await run(sb.from("profiles").update(row).eq("id", me.id));
+    await loadProfile(); await load();
+  }
+
+  /* ---------- lookups (synchronous, from the loaded data) ---------- */
   const user = (id) => db.users.find((u) => u.id === id);
   const property = (id) => db.properties.find((p) => p.id === id);
   const unit = (id) => db.units.find((u) => u.id === id);
   const propertiesOf = (landlordId) => db.properties.filter((p) => p.landlordId === landlordId);
   const unitsOf = (propertyId) => db.units.filter((u) => u.propertyId === propertyId)
     .sort((a, b) => a.label.localeCompare(b.label, undefined, { numeric: true }));
-  const landlordUnits = (landlordId) => {
-    const ids = propertiesOf(landlordId).map((p) => p.id);
-    return db.units.filter((u) => ids.includes(u.propertyId));
-  };
+  const landlordUnits = (landlordId) => { const ids = propertiesOf(landlordId).map((p) => p.id); return db.units.filter((u) => ids.includes(u.propertyId)); };
   const landlordOfUnit = (unitId) => { const u = unit(unitId); return u ? property(u.propertyId)?.landlordId : null; };
+  const isMine = (tenantId) => !!me && me.tenantIds.includes(tenantId);
+  const myUnit = () => db.units.find((u) => isMine(u.tenantId));
   const tenantUnit = (tenantId) => db.units.find((u) => u.tenantId === tenantId);
-
-  /* ---------- notifications ---------- */
-  function notify(userId, text, link) {
-    if (!userId) return;
-    db.notifications.unshift({ id: uid("nt"), userId, text, date: nowISO(), read: false, link: link || "" });
-  }
   const notificationsOf = (userId) => db.notifications.filter((n) => n.userId === userId);
-  function markAllRead(userId) { notificationsOf(userId).forEach((n) => (n.read = true)); save(); }
-
-  /* ---------- properties & units ---------- */
-  function addProperty(landlordId, { name, location, description, count, prefix, type, rent, deposit }) {
-    const p = { id: uid("p"), landlordId, name, location, description: description || "", createdAt: nowISO() };
-    db.properties.push(p);
-    addUnits(p.id, { count, prefix, type, rent, deposit }, false);
-    save();
-    return p;
-  }
-  function addUnits(propertyId, { count, prefix, type, rent, deposit }, persist = true) {
-    const existing = unitsOf(propertyId);
-    const pre = prefix || "";
-    let n = existing.filter((u) => u.label.startsWith(pre))
-      .map((u) => parseInt(u.label.slice(pre.length), 10)).filter((x) => !isNaN(x))
-      .reduce((m, x) => Math.max(m, x), 0);
-    for (let i = 0; i < Number(count || 0); i++) {
-      db.units.push({ id: uid("un"), propertyId, label: pre + (++n), type: type || "1 Bedroom",
-        rent: Number(rent) || 0, deposit: Number(deposit) || 0, status: "vacant", tenantId: null, leaseStart: null, leaseEnd: null });
-    }
-    if (persist) save();
-  }
-  function updateProperty(id, data) { Object.assign(property(id), data); save(); }
-  function deleteProperty(id) {
-    const unitIds = unitsOf(id).map((u) => u.id);
-    db.units = db.units.filter((u) => u.propertyId !== id);
-    db.requests = db.requests.filter((r) => !unitIds.includes(r.unitId));
-    db.properties = db.properties.filter((p) => p.id !== id);
-    save();
-  }
-  function updateUnit(id, data) {
-    const u = unit(id);
-    if (data.rent !== undefined) data.rent = Number(data.rent) || 0;
-    if (data.deposit !== undefined) data.deposit = Number(data.deposit) || 0;
-    Object.assign(u, data);
-    if (u.status === "vacant" || u.status === "maintenance") { u.tenantId = null; }
-    save();
-  }
-  function deleteUnit(id) {
-    db.units = db.units.filter((u) => u.id !== id);
-    db.requests = db.requests.filter((r) => r.unitId !== id);
-    save();
-  }
-
-  /* ---------- tenants ---------- */
-  function addOfflineTenant({ name, phone, email }) {
-    const existing = (email && db.users.find((x) => x.email && x.email.toLowerCase() === email.toLowerCase()))
-      || (phone && db.users.find((x) => x.role === "tenant" && normPhone(x.phone) === normPhone(phone)));
-    if (existing) {
-      if (existing.role !== "tenant") throw new Error("That email belongs to a landlord account.");
-      return existing;
-    }
-    const t = { id: uid("u"), role: "tenant", name, phone: phone || "", email: email || "", pass: null, offline: true, createdAt: nowISO() };
-    db.users.push(t);
-    return t;
-  }
-  function assignTenant(unitId, tenantId, leaseStart, months = 12) {
-    const u = unit(unitId);
-    const prev = tenantUnit(tenantId);
-    if (prev && prev.id !== unitId) throw new Error(user(tenantId).name + " already rents " + prev.label + ". Vacate that house first.");
-    u.tenantId = tenantId;
-    u.status = "occupied";
-    u.leaseStart = leaseStart || today();
-    u.leaseEnd = addMonths(u.leaseStart, months);
-    save();
-  }
-  function vacateUnit(unitId, landlordId) {
-    const u = unit(unitId);
-    const tId = u.tenantId;
-    u.tenantId = null; u.status = "vacant"; u.leaseStart = null; u.leaseEnd = null;
-    db.notices.filter((n) => n.unitId === unitId && n.status !== "completed").forEach((n) => (n.status = "completed"));
-    if (tId) notify(tId, "You have been checked out of house " + u.label + " at " + property(u.propertyId).name + ". Thank you for staying with us.", "home");
-    save();
-  }
-  function renewLease(unitId, months = 12) {
-    const u = unit(unitId);
-    u.leaseEnd = addMonths(u.leaseEnd || today(), months);
-    notify(u.tenantId, "Your lease for " + u.label + " has been renewed to " + u.leaseEnd + ".", "home");
-    save();
-  }
-
-  /* ---------- rent ---------- */
-  const paymentsOf = (filterFn) => db.payments.filter(filterFn).sort((a, b) => b.date.localeCompare(a.date));
+  const paymentsOf = (fn) => db.payments.filter(fn).sort((a, b) => b.date.localeCompare(a.date));
+  const lastCheck = (propertyId, month) => db.checks.find((c) => c.propertyId === propertyId && c.month === month);
   function rentStatus(u, month) {
     const expected = u.tenantId ? u.rent : 0;
-    const paid = db.payments.filter((p) => p.unitId === u.id && p.kind === "rent" && p.month === month && p.tenantId === u.tenantId && !p.refunded)
+    const paid = db.payments.filter((p) => p.unitId === u.id && p.kind === "rent" && p.month === month && p.tenantId === u.tenantId && p.status === "confirmed")
+      .reduce((s, p) => s + p.amount, 0);
+    const pending = db.payments.filter((p) => p.unitId === u.id && p.kind === "rent" && p.month === month && p.tenantId === u.tenantId && p.status === "pending")
       .reduce((s, p) => s + p.amount, 0);
     const balance = Math.max(0, expected - paid);
     const status = !u.tenantId ? "none" : paid >= expected ? "paid" : paid > 0 ? "partial" : "unpaid";
-    return { expected, paid, balance, status };
+    return { expected, paid, pending, balance, status };
   }
-  function depositPaid(u) {
-    if (!u.tenantId) return 0;
-    return db.payments.filter((p) => p.unitId === u.id && p.kind === "deposit" && p.tenantId === u.tenantId && !p.refunded)
-      .reduce((s, p) => s + p.amount, 0);
-  }
-  function recordPayment({ unitId, tenantId, kind, month, amount, method, ref, recordedBy }) {
-    const u = unit(unitId);
-    const p = { id: uid("pay"), receiptNo: "TG-" + (++db.seq), unitId, propertyId: u.propertyId, tenantId,
-      kind, month: kind === "rent" ? month : null, amount: Number(amount), method, ref: ref || "",
-      date: nowISO(), recordedBy };
-    db.payments.push(p);
-    const landlordId = property(u.propertyId).landlordId;
-    const label = { rent: "rent for " + monthLabel(month), deposit: "deposit", booking: "booking fee" }[kind];
-    if (recordedBy === tenantId) {
-      notify(landlordId, user(tenantId).name + " paid " + money(amount) + " " + label + " for " + u.label + " (" + method + ").", "payments");
-    } else {
-      notify(tenantId, "Payment of " + money(amount) + " " + label + " for " + u.label + " was recorded. Receipt " + p.receiptNo + ".", "payments");
-    }
-    save();
-    return p;
-  }
-  function deletePayment(id) { db.payments = db.payments.filter((p) => p.id !== id); save(); }
+  const depositPaid = (u) => !u.tenantId ? 0 : db.payments.filter((p) => p.unitId === u.id && p.kind === "deposit" && p.tenantId === u.tenantId && p.status === "confirmed")
+    .reduce((s, p) => s + p.amount, 0);
 
-  /* ---------- house requests / bookings ---------- */
-  function requestUnit(tenantId, unitId, message, paid) {
-    const u = unit(unitId);
-    if (!u || (u.status !== "vacant" && !(paid && u.status === "reserved"))) throw new Error("Sorry, this house is no longer available.");
-    if (db.requests.some((r) => r.tenantId === tenantId && r.unitId === unitId && r.status === "pending")) {
-      const r = db.requests.find((r) => r.tenantId === tenantId && r.unitId === unitId && r.status === "pending");
-      if (paid) { r.paid = true; u.status = "reserved"; save(); }
-      return r;
-    }
-    const r = { id: uid("rq"), unitId, tenantId, status: "pending", paid: !!paid, message: message || "", date: nowISO() };
-    db.requests.push(r);
-    if (paid) u.status = "reserved";
-    notify(landlordOfUnit(unitId), user(tenantId).name + (paid ? " booked and paid for " : " requested ") + "house " + u.label +
-      " at " + property(u.propertyId).name + ".", "requests");
-    save();
-    return r;
-  }
-  function decideRequest(requestId, approve) {
-    const r = db.requests.find((x) => x.id === requestId);
-    const u = unit(r.unitId);
-    const p = property(u.propertyId);
-    if (approve) {
-      assignTenant(u.id, r.tenantId, today());
-      r.status = "approved";
-      notify(r.tenantId, "Good news! Your request for " + u.label + " at " + p.name + " was approved. Welcome home.", "home");
-      // other pending requests for the same house are declined
-      db.requests.filter((x) => x.unitId === u.id && x.status === "pending" && x.id !== r.id).forEach((x) => {
-        x.status = "rejected";
-        notify(x.tenantId, "House " + u.label + " at " + p.name + " has been taken." + (x.paid ? " Your payment will be refunded." : ""), "requests");
-        refundBooking(x);
-      });
-    } else {
-      r.status = "rejected";
-      refundBooking(r);
-      if (u.status === "reserved" && !db.requests.some((x) => x.unitId === u.id && x.status === "pending" && x.paid)) u.status = "vacant";
-      notify(r.tenantId, "Your request for " + u.label + " at " + p.name + " was declined." + (r.paid ? " Your payment will be refunded." : ""), "requests");
-    }
-    save();
-  }
-  function refundBooking(r) {
-    if (!r.paid) return;
-    db.payments.filter((p) => p.unitId === r.unitId && p.tenantId === r.tenantId && !p.refunded).forEach((p) => (p.refunded = true));
-  }
-  function cancelRequest(requestId) {
-    const r = db.requests.find((x) => x.id === requestId);
-    r.status = "cancelled";
-    const u = unit(r.unitId);
-    refundBooking(r);
-    if (u.status === "reserved" && !db.requests.some((x) => x.unitId === u.id && x.status === "pending" && x.paid)) u.status = "vacant";
-    notify(landlordOfUnit(r.unitId), user(r.tenantId).name + " cancelled their request for " + u.label + ".", "requests");
-    save();
-  }
+  /* ---------- changes (all async; data is reloaded afterwards) ---------- */
+  const after = async (promise) => { const r = await promise; await load(); return r; };
+  const num = (x) => Math.max(0, Math.round(Number(x) || 0));
 
-  /* ---------- move-out notices ---------- */
-  function giveNotice(tenantId, moveOutDate, reason) {
-    const u = tenantUnit(tenantId);
-    if (!u) throw new Error("You are not linked to any house.");
-    if (db.notices.some((n) => n.unitId === u.id && n.tenantId === tenantId && n.status !== "completed"))
-      throw new Error("You have already given notice for this house.");
-    db.notices.push({ id: uid("mo"), unitId: u.id, tenantId, moveOutDate, reason: reason || "", date: nowISO(), status: "pending" });
-    u.status = "notice";
-    notify(landlordOfUnit(u.id), "MOVE-OUT: " + user(tenantId).name + " will move out of " + u.label + " at " +
-      property(u.propertyId).name + " on " + fmtDate(moveOutDate) + ".", "moveouts");
-    save();
+  const addProperty = (_me, d) => after(rpc("create_property", { p_name: d.name, p_location: d.location, p_description: d.description || "",
+    p_count: num(d.count), p_prefix: d.prefix || "", p_type: d.type, p_rent: num(d.rent), p_deposit: num(d.deposit) }));
+  const addUnits = (pid, d) => after(rpc("add_units", { p_property: pid, p_count: num(d.count), p_prefix: d.prefix || "", p_type: d.type, p_rent: num(d.rent), p_deposit: num(d.deposit) }));
+  const updateProperty = (id, d) => after(run(sb.from("properties").update({ name: d.name, location: d.location, description: d.description || "" }).eq("id", id)));
+  const deleteProperty = (id) => after(run(sb.from("properties").delete().eq("id", id)));
+  async function updateUnit(id, d) {
+    const u = unit(id);
+    if (d.status && d.status !== u.status) await rpc("set_unit_status", { p_unit: id, p_status: d.status });
+    const row = { label: d.label, type: d.type, rent: num(d.rent), deposit: num(d.deposit) };
+    if (d.leaseStart) row.lease_start = d.leaseStart;
+    if (d.leaseEnd) row.lease_end = d.leaseEnd;
+    await run(sb.from("units").update(row).eq("id", id));
+    await load();
   }
-  function acknowledgeNotice(id) {
-    const n = db.notices.find((x) => x.id === id);
-    n.status = "acknowledged";
-    notify(n.tenantId, "Your landlord received your move-out notice for " + fmtDate(n.moveOutDate) + ".", "home");
-    save();
+  async function deleteUnit(id) {
+    const rows = await run(sb.from("units").delete().eq("id", id).select("id"));
+    if (!rows.length) throw new Error("Check the tenant out before deleting this house.");
+    await load();
   }
-  function withdrawNotice(id) {
-    const n = db.notices.find((x) => x.id === id);
-    const u = unit(n.unitId);
-    db.notices = db.notices.filter((x) => x.id !== id);
-    if (u.status === "notice") u.status = "occupied";
-    notify(landlordOfUnit(u.id), user(n.tenantId).name + " withdrew their move-out notice for " + u.label + ".", "moveouts");
-    save();
-  }
+  const addTenant = (d) => after(rpc("add_tenant", { p_unit: d.unitId, p_name: d.name, p_phone: d.phone || "", p_email: d.email || "",
+    p_start: d.start || today(), p_months: Number(d.months) || 12, p_deposit_paid: !!d.depositPaid, p_rent_paid: !!d.rentPaid, p_month: ym() }));
+  const newInviteCode = (tenantId) => after(rpc("new_invite_code", { p_tenant: tenantId }));
+  const claimInvite = async (code) => { const r = await rpc("claim_invite", { p_code: code }); await loadProfile(); await load(); return r; };
+  const vacateUnit = (unitId) => after(rpc("vacate_unit", { p_unit: unitId }));
+  const renewLease = (unitId, months) => after(rpc("renew_lease", { p_unit: unitId, p_months: months }));
+  const notifyTenant = (unitId, text) => rpc("notify_tenant", { p_unit: unitId, p_text: text });
+  const announce = (propertyId, text) => rpc("announce", { p_property: propertyId || null, p_text: text });
 
-  /* ---------- monthly check ---------- */
-  function saveCheck(landlordId, propertyId, month, items) {
-    items.forEach(({ unitId, status }) => {
-      const u = unit(unitId);
-      if (u.status !== status) {
-        if ((status === "vacant" || status === "maintenance") && u.tenantId) vacateUnit(unitId, landlordId);
-        u.status = status;
-        if (status === "vacant" || status === "maintenance") u.tenantId = null;
-      }
-    });
-    db.checks = db.checks.filter((c) => !(c.propertyId === propertyId && c.month === month));
-    db.checks.push({ id: uid("ck"), landlordId, propertyId, month, items, date: nowISO() });
-    save();
-  }
-  const lastCheck = (propertyId, month) => db.checks.find((c) => c.propertyId === propertyId && c.month === month);
+  const payArgs = (d) => ({ p_unit: d.unitId, p_kind: d.kind, p_month: d.kind === "rent" ? d.month : null, p_amount: num(d.amount), p_method: d.method, p_ref: d.ref || "" });
+  const recordPayment = async (d) => { const r = await rpc("record_payment", payArgs(d)); await load(); return db.payments.find((p) => p.id === r.id) || mapPayment(r); };
+  const reportPayment = async (d) => { const r = await rpc("report_payment", payArgs(d)); await load(); return db.payments.find((p) => p.id === r.id) || mapPayment(r); };
+  const reviewPayment = (id, approve) => after(rpc("review_payment", { p_payment: id, p_approve: approve }));
+  const deletePayment = (id) => after(rpc("delete_payment", { p_payment: id }));
 
-  /* ---------- expenses ---------- */
-  function addExpense(landlordId, data) {
-    db.expenses.push({ id: uid("ex"), landlordId, ...data, amount: Number(data.amount) });
-    save();
+  const requestUnit = (unitId, message, option = "none", method = null, ref = null) =>
+    after(rpc("request_unit", { p_unit: unitId, p_message: message || "", p_option: option, p_method: method, p_ref: ref, p_month: ym() }));
+  const decideRequest = (id, approve) => after(rpc("decide_request", { p_request: id, p_approve: approve }));
+  const cancelRequest = (id) => after(rpc("cancel_request", { p_request: id }));
+  const giveNotice = (unitId, date, reason) => after(rpc("give_notice", { p_unit: unitId, p_date: date, p_reason: reason || "" }));
+  const acknowledgeNotice = (id) => after(rpc("ack_notice", { p_notice: id }));
+  const withdrawNotice = (id) => after(rpc("withdraw_notice", { p_notice: id }));
+  const saveCheck = (_me, propertyId, month, items) => after(rpc("save_check", { p_property: propertyId, p_month: month, p_items: items }));
+  const addExpense = (_me, d) => after(run(sb.from("expenses").insert({ property_id: d.propertyId || null, category: d.category,
+    amount: num(d.amount), date: d.date || today(), note: d.note || "" })));
+  const deleteExpense = (id) => after(run(sb.from("expenses").delete().eq("id", id)));
+  async function markAllRead() {
+    if (!me || !db.notifications.some((n) => !n.read)) return;
+    db.notifications.forEach((n) => (n.read = true));
+    await run(sb.from("notifications").update({ read: true }).eq("user_id", me.id).eq("read", false));
   }
-  function deleteExpense(id) { db.expenses = db.expenses.filter((e) => e.id !== id); save(); }
 
   /* ---------- formatting ---------- */
   const money = (n) => "Ksh " + Number(n || 0).toLocaleString("en-KE");
-  const monthLabel = (m) => {
-    if (!m) return "";
-    const [y, mo] = m.split("-");
-    return new Date(+y, +mo - 1, 1).toLocaleDateString("en-GB", { month: "long", year: "numeric" });
-  };
+  const monthLabel = (m) => { if (!m) return ""; const [y, mo] = m.split("-"); return new Date(+y, +mo - 1, 1).toLocaleDateString("en-GB", { month: "long", year: "numeric" }); };
   const fmtDate = (d) => d ? new Date(d).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" }) : "—";
 
   return {
-    get db() { return db; }, save, reset, uid, today, ym, addMonths, hash,
-    currentUser, login, register, logout,
-    user, property, unit, propertiesOf, unitsOf, landlordUnits, landlordOfUnit, tenantUnit,
-    notify, notificationsOf, markAllRead,
+    get db() { return db; }, get me() { return me; }, client: sb,
+    today, ym, addMonths, init, refresh, onChange,
+    currentUser: () => me, peek: loadProfile, login, register, logout, resetPassword, updatePassword, onAuth, updateProfile,
+    user, property, unit, propertiesOf, unitsOf, landlordUnits, landlordOfUnit, tenantUnit, isMine, myUnit,
+    notificationsOf, markAllRead, paymentsOf, rentStatus, depositPaid, lastCheck,
     addProperty, addUnits, updateProperty, deleteProperty, updateUnit, deleteUnit,
-    addOfflineTenant, assignTenant, vacateUnit, renewLease,
-    paymentsOf, rentStatus, depositPaid, recordPayment, deletePayment,
-    requestUnit, decideRequest, cancelRequest,
-    giveNotice, acknowledgeNotice, withdrawNotice,
-    saveCheck, lastCheck, addExpense, deleteExpense,
-    money, monthLabel, fmtDate, normPhone,
+    addTenant, newInviteCode, claimInvite, vacateUnit, renewLease, notifyTenant, announce,
+    recordPayment, reportPayment, reviewPayment, deletePayment,
+    requestUnit, decideRequest, cancelRequest, giveNotice, acknowledgeNotice, withdrawNotice,
+    saveCheck, addExpense, deleteExpense,
+    money, monthLabel, fmtDate,
   };
 })();

@@ -96,6 +96,8 @@
     </div>
   </footer>
 
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.118.0/dist/umd/supabase.js"></script>
+  <script src="js/config.js"></script>
   <script src="js/store.js"></script>
   <script src="js/ui.js"></script>
   <script>
@@ -110,9 +112,10 @@
     ];
     document.getElementById("featureGrid").innerHTML = F.map(([i, t, d]) =>
       `<div class="feature"><div class="f-ic">${UI.icon(i)}</div><h3>${t}</h3><p>${d}</p></div>`).join("");
-    // If already logged in, change CTA
-    const me = Store.currentUser();
-    if (me) document.querySelectorAll('.hero-cta .btn-primary').forEach(b => { b.textContent = "Open dashboard"; b.href = me.role === "landlord" ? "landlord.html" : "tenant.html"; });
+    // If already logged in, change the main button to "Open dashboard"
+    Store.peek().then(me => {
+      if (me) document.querySelectorAll('.hero-cta .btn-primary').forEach(b => { b.textContent = "Open dashboard"; b.href = me.role === "landlord" ? "landlord.html" : "tenant.html"; });
+    }).catch(() => {});
   </script>
 </body>
 </html>

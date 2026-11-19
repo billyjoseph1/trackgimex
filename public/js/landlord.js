@@ -3,11 +3,10 @@
   const { esc, badge, icon, modal, toast, confirmBox } = UI;
   const S = Store;
   const state = { propertyId: null, month: S.ym(), checkProp: null, checkMonth: S.ym(), rentProp: "", rentFilter: "", payProp: "", payMonth: "" };
-  let me = Store.currentUser();
 
   /* ---------- helpers ---------- */
-  const myProps = () => S.propertiesOf(me.id);
-  const myUnits = () => S.landlordUnits(me.id);
+  const myProps = () => S.propertiesOf(S.me.id);
+  const myUnits = () => S.landlordUnits(S.me.id);
   const propName = (id) => S.property(id)?.name || "";
   const tenantName = (u) => (u.tenantId ? S.user(u.tenantId)?.name : "") || "";
   const STATUSES = [["vacant", "Vacant / empty"], ["occupied", "Occupied"], ["reserved", "Reserved"], ["notice", "Moving out"], ["maintenance", "Maintenance"]];
@@ -20,6 +19,7 @@
   const pendingRequests = () => S.db.requests.filter((r) => r.status === "pending" && myUnits().some((u) => u.id === r.unitId));
   const openNotices = () => S.db.notices.filter((n) => n.status !== "completed" && myUnits().some((u) => u.id === n.unitId));
   const myPayments = () => { const ids = myProps().map((p) => p.id); return S.paymentsOf((p) => ids.includes(p.propertyId)); };
+  const pendingPays = () => S.db.payments.filter((p) => p.status === "pending" && !S.db.requests.some((r) => r.unitId === p.unitId && r.tenantId === p.tenantId && r.status === "pending"));
   const refresh = () => Shell.render();
   const noProps = () => `<div class="card empty">
       <h3 style="color:var(--text)">Add your first building</h3>
@@ -42,11 +42,12 @@
     const notices = openNotices();
     const expiring = units.filter((u) => u.tenantId && u.leaseEnd && daysLeft(u.leaseEnd) <= 30);
     const reqs = pendingRequests();
-    const notes = S.notificationsOf(me.id).slice(0, 6);
+    const notes = S.notificationsOf(S.me.id).slice(0, 6);
     return `
       ${notices.length ? `<div class="alert-box danger"><strong>${notices.length} move-out notice${notices.length > 1 ? "s" : ""}.</strong>
         ${notices.map((n) => `${esc(S.user(n.tenantId)?.name)} (${esc(S.unit(n.unitId)?.label)}) on ${S.fmtDate(n.moveOutDate)}`).join("; ")}.
         <a href="#moveouts">View</a></div>` : ""}
+      ${pendingPays().length ? `<div class="alert-box warn"><strong>${pendingPays().length} payment${pendingPays().length > 1 ? "s" : ""}</strong> reported by tenants need your confirmation. <a href="#payments">Confirm</a></div>` : ""}
       ${reqs.length ? `<div class="alert-box info"><strong>${reqs.length} house request${reqs.length > 1 ? "s" : ""}</strong> waiting for your approval. <a href="#requests">Review</a></div>` : ""}
       ${expiring.length ? `<div class="alert-box warn"><strong>${expiring.length} lease${expiring.length > 1 ? "s" : ""}</strong> end within 30 days. <a href="#leases">Renew</a></div>` : ""}
       <div class="stats">
@@ -210,9 +211,10 @@
         <button class="btn btn-outline btn-sm" data-act="announce">${icon("megaphone")} Send announcement</button>
         <button class="btn btn-primary btn-sm" data-act="assignTenant">${icon("plus")} Add tenant</button></div>
       <div class="card">${occupied.length ? `<div class="table-wrap"><table class="tbl" id="tTable"><thead><tr><th>Tenant</th><th>Phone</th><th>House</th><th>Moved in</th><th>Lease ends</th><th class="num">Deposit</th><th>This month</th><th></th></tr></thead><tbody>
-        ${occupied.map((u) => { const t = S.user(u.tenantId); const r = S.rentStatus(u, S.ym()); const dep = S.depositPaid(u);
+        ${occupied.map((u) => { const t = S.user(u.tenantId) || { name: "—", phone: "" }; const r = S.rentStatus(u, S.ym()); const dep = S.depositPaid(u);
           return `<tr data-search="${esc((t.name + " " + t.phone + " " + u.label + " " + propName(u.propertyId)).toLowerCase())}">
-          <td><strong>${esc(t.name)}</strong><div class="muted small">${t.pass ? "Has TrackGimex account" : "Added by you"}</div></td>
+          <td><strong>${esc(t.name)}</strong><div class="muted small">${t.hasAccount ? "✓ Has TrackGimex account"
+            : t.inviteCode ? `No account yet · code <strong style="color:var(--text)">${esc(t.inviteCode)}</strong> <a href="#" data-act="shareCode" data-tenant="${t.id}">Share</a>` : "No account yet"}</div></td>
           <td>${esc(t.phone)}</td><td>${esc(u.label)} <span class="muted small">· ${esc(propName(u.propertyId))}</span> ${u.status === "notice" ? badge("notice") : ""}</td>
           <td>${S.fmtDate(u.leaseStart)}</td><td>${S.fmtDate(u.leaseEnd)}</td>
           <td class="num">${dep >= u.deposit ? S.money(dep) : `<span style="color:var(--amber)">${S.money(dep)} / ${S.money(u.deposit)}</span>`}</td>
@@ -222,16 +224,20 @@
         </tbody></table></div>` : `<div class="empty">No tenants yet.<br><button class="btn btn-primary" data-act="assignTenant">Add tenant</button></div>`}</div>`;
   };
 
+  // payments a tenant reported for a house request (booking)
+  const requestPayments = (r) => S.db.payments.filter((p) => p.unitId === r.unitId && p.tenantId === r.tenantId && p.status !== "cancelled");
+
   views.requests = () => {
     const ids = myUnits().map((u) => u.id);
     const list = S.db.requests.filter((r) => ids.includes(r.unitId)).sort((a, b) => (a.status === "pending" ? -1 : 1) - (b.status === "pending" ? -1 : 1) || b.date.localeCompare(a.date));
-    return `<div class="card"><div class="card-head"><h3>House requests &amp; bookings</h3><span class="muted small">Tenants ask for empty houses here. Approving moves them in.</span></div>
-      ${list.length ? `<div class="table-wrap"><table class="tbl"><thead><tr><th>Tenant</th><th>House</th><th class="num">Rent</th><th>Paid</th><th>Message</th><th>Date</th><th>Status</th><th></th></tr></thead><tbody>
-      ${list.map((r) => { const u = S.unit(r.unitId); const t = S.user(r.tenantId);
-        const paidAmt = S.db.payments.filter((p) => p.unitId === r.unitId && p.tenantId === r.tenantId && !p.refunded).reduce((s, p) => s + p.amount, 0);
+    return `<div class="card"><div class="card-head"><h3>House requests &amp; bookings</h3><span class="muted small">Tenants ask for empty houses here. Approving moves them in and confirms their booking payment.</span></div>
+      ${list.length ? `<div class="table-wrap"><table class="tbl"><thead><tr><th>Tenant</th><th>House</th><th class="num">Rent</th><th>Payment reported</th><th>Message</th><th>Date</th><th>Status</th><th></th></tr></thead><tbody>
+      ${list.map((r) => { const u = S.unit(r.unitId); const t = S.user(r.tenantId); const pays = requestPayments(r);
         return `<tr><td><strong>${esc(t?.name)}</strong><div class="muted small">${esc(t?.phone)} ${esc(t?.email)}</div></td>
-        <td>${esc(u.label)}<div class="muted small">${esc(propName(u.propertyId))}</div></td><td class="num">${S.money(u.rent)}</td>
-        <td>${r.paid ? `<span class="badge st-occupied">${S.money(paidAmt)} paid</span>` : '<span class="muted small">Not paid</span>'}</td>
+        <td>${esc(u?.label)}<div class="muted small">${esc(propName(u?.propertyId))}</div></td><td class="num">${S.money(u?.rent)}</td>
+        <td>${pays.length ? pays.map((p) => `<div>${S.money(p.amount)} ${esc(p.kind)} · ${esc(p.method)} <strong>${esc(p.ref)}</strong> ${badge(p.status === "pending" ? "awaiting" : p.status)}</div>`).join("")
+          : '<span class="muted small">Not paid</span>'}
+          ${r.status === "pending" && pays.some((p) => p.status === "pending") ? '<div class="hint">Check this code on your M-Pesa / bank statement before approving.</div>' : ""}</td>
         <td style="max-width:240px">${esc(r.message) || '<span class="muted">—</span>'}</td><td>${S.fmtDate(r.date)}</td><td>${badge(r.status)}</td>
         <td class="actions">${r.status === "pending" ? `<button class="btn btn-sm btn-primary" data-act="approve" data-id="${r.id}">Approve</button>
           <button class="btn btn-sm btn-danger" data-act="decline" data-id="${r.id}">Decline</button>` : ""}</td></tr>`; }).join("")}
@@ -243,41 +249,54 @@
     const list = S.db.notices.filter((n) => ids.includes(n.unitId)).sort((a, b) => (a.status === "completed") - (b.status === "completed") || a.moveOutDate.localeCompare(b.moveOutDate));
     return `<div class="card"><div class="card-head"><h3>Move-out notices</h3><span class="muted small">Tenants who said they are leaving. You are notified the moment they submit.</span></div>
       ${list.length ? `<div class="table-wrap"><table class="tbl"><thead><tr><th>Tenant</th><th>House</th><th>Notice given</th><th>Moving out on</th><th>Reason</th><th>Status</th><th></th></tr></thead><tbody>
-      ${list.map((n) => { const u = S.unit(n.unitId); const t = S.user(n.tenantId); const d = daysLeft(n.moveOutDate); const r = u ? S.rentStatus(u, S.ym()) : null;
+      ${list.map((n) => { const u = S.unit(n.unitId); const t = S.user(n.tenantId); const d = daysLeft(n.moveOutDate); const r = u && u.tenantId === n.tenantId ? S.rentStatus(u, S.ym()) : null;
         return `<tr><td><strong>${esc(t?.name)}</strong><div class="muted small">${esc(t?.phone)}</div></td>
         <td>${esc(u?.label)}<div class="muted small">${esc(propName(u?.propertyId))}</div></td><td>${S.fmtDate(n.date)}</td>
         <td>${S.fmtDate(n.moveOutDate)}${n.status !== "completed" ? `<div class="small" style="color:${d <= 7 ? "var(--red)" : "var(--muted)"}">${d >= 0 ? d + " days left" : "date passed"}</div>` : ""}</td>
         <td style="max-width:220px">${esc(n.reason) || '<span class="muted">—</span>'}</td><td>${badge(n.status)}
           ${n.status !== "completed" && r && r.balance ? `<div class="small" style="color:var(--amber)">Owes ${S.money(r.balance)}</div>` : ""}</td>
         <td class="actions">${n.status === "pending" ? `<button class="btn btn-sm btn-outline" data-act="ackNotice" data-id="${n.id}">Acknowledge</button>` : ""}
-          ${n.status !== "completed" && u ? `<button class="btn btn-sm btn-primary" data-act="vacate" data-unit="${u.id}">Mark house empty</button>` : ""}</td></tr>`; }).join("")}
+          ${n.status !== "completed" && u && u.tenantId === n.tenantId ? `<button class="btn btn-sm btn-primary" data-act="vacate" data-unit="${u.id}">Mark house empty</button>` : ""}</td></tr>`; }).join("")}
       </tbody></table></div>` : '<div class="empty">No move-out notices.</div>'}</div>`;
   };
 
+  const forLabel = (p) => p.kind === "rent" ? "Rent · " + S.monthLabel(p.month) : "Deposit";
   views.payments = () => {
-    const list = myPayments().filter((p) => (!state.payProp || p.propertyId === state.payProp) && (!state.payMonth || p.date.slice(0, 7) === state.payMonth));
-    const total = list.filter((p) => !p.refunded).reduce((s, p) => s + p.amount, 0);
-    return `<div class="toolbar"><select data-change="setPayProp">${propOptions(state.payProp, true)}</select>
+    const pending = myPayments().filter((p) => p.status === "pending");
+    const list = myPayments().filter((p) => p.status !== "pending" && (!state.payProp || p.propertyId === state.payProp) && (!state.payMonth || p.date.slice(0, 7) === state.payMonth));
+    const total = list.filter((p) => p.status === "confirmed").reduce((s, p) => s + p.amount, 0);
+    return `${pending.length ? `<div class="card" style="border-color:rgba(242,180,65,.45)"><div class="card-head"><h3>Waiting for your confirmation (${pending.length})</h3>
+        <span class="muted small">Tenants say they paid. Check each code on your M-Pesa / bank statement, then confirm.</span></div>
+        <div class="table-wrap"><table class="tbl"><thead><tr><th>Reported</th><th>Tenant</th><th>House</th><th>For</th><th>Method &amp; code</th><th class="num">Amount</th><th></th></tr></thead><tbody>
+        ${pending.map((p) => { const req = S.db.requests.find((r) => r.unitId === p.unitId && r.tenantId === p.tenantId && r.status === "pending");
+          return `<tr><td>${UI.timeAgo(p.date)}</td><td>${esc(S.user(p.tenantId)?.name)}</td>
+          <td>${esc(p.unitLabel)} <span class="muted small">· ${esc(propName(p.propertyId))}</span></td><td>${forLabel(p)}${req ? '<div class="muted small">House booking</div>' : ""}</td>
+          <td>${esc(p.method)} <strong>${esc(p.ref)}</strong></td><td class="num"><strong>${S.money(p.amount)}</strong></td>
+          <td class="actions">${req ? `<a class="btn btn-sm btn-outline" href="#requests">Review booking</a>`
+            : `<button class="btn btn-sm btn-primary" data-act="confirmPay" data-id="${p.id}">Confirm</button>
+               <button class="btn btn-sm btn-danger" data-act="rejectPay" data-id="${p.id}">Reject</button>`}</td></tr>`; }).join("")}
+        </tbody></table></div></div>` : ""}
+      <div class="toolbar"><select data-change="setPayProp">${propOptions(state.payProp, true)}</select>
         <input type="month" value="${state.payMonth}" data-change="setPayMonth" title="Filter by date paid">
         ${state.payMonth ? `<button class="btn btn-ghost btn-sm" data-act="clearPayMonth">Clear month</button>` : ""}
-        <span class="spacer"></span><strong>${S.money(total)}</strong><span class="muted small">from ${list.length} payments</span>
+        <span class="spacer"></span><strong>${S.money(total)}</strong><span class="muted small">confirmed</span>
         <button class="btn btn-outline btn-sm" data-act="exportPayments">Export CSV</button>
         <button class="btn btn-primary btn-sm" data-act="recordPayment">${icon("plus")} Record payment</button></div>
       <div class="card">${list.length ? `<div class="table-wrap"><table class="tbl"><thead><tr><th>Date</th><th>Receipt</th><th>Tenant</th><th>House</th><th>For</th><th>Method</th><th class="num">Amount</th><th></th></tr></thead><tbody>
       ${list.map((p) => `<tr><td>${S.fmtDate(p.date)}</td><td>${esc(p.receiptNo)}</td><td>${esc(S.user(p.tenantId)?.name)}</td>
-        <td>${esc(S.unit(p.unitId)?.label || "—")} <span class="muted small">· ${esc(propName(p.propertyId))}</span></td>
-        <td>${p.kind === "rent" ? "Rent · " + S.monthLabel(p.month) : p.kind === "deposit" ? "Deposit" : "Booking"} ${p.refunded ? badge("rejected").replace("Declined", "Refunded") : ""}</td>
+        <td>${esc(p.unitLabel || "—")} <span class="muted small">· ${esc(propName(p.propertyId))}</span></td>
+        <td>${forLabel(p)} ${p.status !== "confirmed" ? badge(p.status) : ""}</td>
         <td>${esc(p.method)}${p.ref ? `<div class="muted small">${esc(p.ref)}</div>` : ""}</td><td class="num"><strong>${S.money(p.amount)}</strong></td>
-        <td class="actions"><button class="btn btn-sm btn-ghost" data-act="receipt" data-id="${p.id}">Receipt</button>
-        ${p.recordedBy === me.id ? `<button class="btn btn-sm btn-ghost" data-act="deletePayment" data-id="${p.id}" title="Delete">✕</button>` : ""}</td></tr>`).join("")}
+        <td class="actions"><button class="btn btn-sm btn-ghost" data-act="receipt" data-id="${p.id}">${p.status === "confirmed" ? "Receipt" : "View"}</button>
+        ${p.recordedBy === S.me.id ? `<button class="btn btn-sm btn-ghost" data-act="deletePayment" data-id="${p.id}" title="Delete">✕</button>` : ""}</td></tr>`).join("")}
       </tbody></table></div>` : '<div class="empty">No payments found.</div>'}</div>`;
   };
 
   views.expenses = () => {
     const month = state.month;
-    const ex = S.db.expenses.filter((e) => e.landlordId === me.id).sort((a, b) => b.date.localeCompare(a.date));
+    const ex = S.db.expenses.filter((e) => e.landlordId === S.me.id).sort((a, b) => b.date.localeCompare(a.date));
     const exMonth = ex.filter((e) => e.date.slice(0, 7) === month);
-    const income = myPayments().filter((p) => !p.refunded && p.kind === "rent" && p.month === month).reduce((s, p) => s + p.amount, 0);
+    const income = myPayments().filter((p) => p.status === "confirmed" && p.kind === "rent" && p.month === month).reduce((s, p) => s + p.amount, 0);
     const spent = exMonth.reduce((s, e) => s + e.amount, 0);
     return `<div class="toolbar"><input type="month" value="${month}" data-change="setMonth"><span class="spacer"></span>
         <button class="btn btn-primary btn-sm" data-act="addExpense">${icon("plus")} Add expense</button></div>
@@ -306,31 +325,31 @@
       </tbody></table></div>` : '<div class="empty">No active leases.</div>'}</div>`;
   };
 
-  views.notifications = (me) => Shell.notificationsView(me);
+  views.notifications = (m) => Shell.notificationsView(m);
 
   views.settings = () => `<div class="two-col">
       <div class="card"><div class="card-head"><h3>My profile</h3></div>
         <form id="profileForm">
-          <div class="field"><label>Full name</label><input name="name" value="${esc(me.name)}"></div>
-          <div class="field-row"><div class="field"><label>Phone</label><input name="phone" value="${esc(me.phone)}"></div>
-          <div class="field"><label>Role</label><select name="kind">${["Landlord", "Agent", "Caretaker"].map((k) => `<option ${k === me.kind ? "selected" : ""}>${k}</option>`).join("")}</select></div></div>
-          <div class="field"><label>Email</label><input value="${esc(me.email)}" disabled></div>
+          <div class="field"><label>Full name</label><input name="name" value="${esc(S.me.name)}"></div>
+          <div class="field-row"><div class="field"><label>Phone</label><input name="phone" value="${esc(S.me.phone)}"></div>
+          <div class="field"><label>Role</label><select name="kind">${["Landlord", "Agent", "Caretaker"].map((k) => `<option ${k === S.me.kind ? "selected" : ""}>${k}</option>`).join("")}</select></div></div>
+          <div class="field"><label>Email</label><input value="${esc(S.me.email)}" disabled></div>
+          <div class="field"><label>How tenants should pay you</label>
+            <textarea name="payoutInfo" maxlength="500" placeholder="e.g. M-Pesa Paybill 123456, Account: your house number (e.g. A4). Or Till 987654.">${esc(S.me.payoutInfo)}</textarea>
+            <p class="hint">Shown to your tenants on the payment page. They pay you directly, then enter the M-Pesa code for you to confirm.</p></div>
           <button class="btn btn-primary" data-act="saveProfile">Save</button>
         </form></div>
-      <div class="card"><div class="card-head"><h3>Data</h3></div>
-        <p class="muted" style="margin-bottom:14px">This version stores everything in this browser. Export your records regularly.</p>
-        <button class="btn btn-outline" data-act="exportPayments">Export all payments (CSV)</button>
-        <hr style="border:0;border-top:1px solid var(--line);margin:20px 0">
-        <p class="muted small" style="margin-bottom:10px">Reset brings back the demo buildings and deletes everything else.</p>
-        <button class="btn btn-danger" data-act="resetData">Reset demo data</button></div></div>`;
+      <div class="card"><div class="card-head"><h3>Your records</h3></div>
+        <p class="muted" style="margin-bottom:14px">Your data is stored securely online and is available on any device you log in from. You can also download a copy.</p>
+        <button class="btn btn-outline" data-act="exportPayments">Export all payments (CSV)</button></div></div>`;
 
   /* ======================= MODALS ======================= */
   function propertyModal(p) {
     const isNew = !p;
     modal(isNew ? "Add a building" : "Edit building", `
-      <div class="field"><label>Building / plot name</label><input name="name" required value="${esc(p?.name)}" placeholder="e.g. Sunrise Apartments"></div>
-      <div class="field"><label>Location</label><input name="location" required value="${esc(p?.location)}" placeholder="e.g. Kasarani, Nairobi"></div>
-      <div class="field"><label>Description (shown to tenants)</label><textarea name="description" placeholder="Water, security, parking…">${esc(p?.description)}</textarea></div>
+      <div class="field"><label>Building / plot name</label><input name="name" required maxlength="120" value="${esc(p?.name)}" placeholder="e.g. Sunrise Apartments"></div>
+      <div class="field"><label>Location</label><input name="location" required maxlength="160" value="${esc(p?.location)}" placeholder="e.g. Kasarani, Nairobi"></div>
+      <div class="field"><label>Description (shown to tenants)</label><textarea name="description" maxlength="1000" placeholder="Water, security, parking…">${esc(p?.description)}</textarea></div>
       ${isNew ? `<h4 style="margin:6px 0 12px">Houses in this building</h4>
       <div class="field-row">
         <div class="field"><label>Number of houses</label><input name="count" type="number" min="1" max="500" value="10" required></div>
@@ -341,15 +360,14 @@
         <div class="field"><label>Monthly rent (Ksh)</label><input name="rent" type="number" min="0" value="10000"></div>
         <div class="field"><label>Deposit (Ksh)</label><input name="deposit" type="number" min="0" value="10000"></div>
       </div><p class="hint">You can change the rent and type of each house later. Mixed buildings? Add the rest with “Add houses”.</p>` : ""}`,
-    { submitText: isNew ? "Create building" : "Save", onSubmit: (d) => {
+    { submitText: isNew ? "Create building" : "Save", onSubmit: async (d) => {
       if (!d.name.trim() || !d.location.trim()) throw new Error("Name and location are required.");
       if (isNew) {
         if (!(+d.count >= 1)) throw new Error("Enter how many houses the building has.");
-        const np = S.addProperty(me.id, d);
-        state.propertyId = np.id;
+        state.propertyId = await S.addProperty(S.me.id, d);
         toast(`${d.name} created with ${d.count} houses.`);
         location.hash = "properties";
-      } else { S.updateProperty(p.id, { name: d.name, location: d.location, description: d.description }); toast("Building updated."); }
+      } else { await S.updateProperty(p.id, { name: d.name.trim(), location: d.location.trim(), description: d.description }); toast("Building updated."); }
       refresh();
     } });
   }
@@ -363,9 +381,9 @@
       <div class="field-row"><div class="field"><label>Type</label><select name="type">${typeOptions(last?.type || "1 Bedroom")}</select></div>
         <div class="field"><label>Rent (Ksh)</label><input name="rent" type="number" min="0" value="${last?.rent || 10000}"></div>
         <div class="field"><label>Deposit (Ksh)</label><input name="deposit" type="number" min="0" value="${last?.deposit || 10000}"></div></div>`,
-    { submitText: "Add houses", onSubmit: (d) => {
+    { submitText: "Add houses", onSubmit: async (d) => {
       if (!(+d.count >= 1)) throw new Error("Enter a number of houses.");
-      S.addUnits(pid, d); toast(d.count + " house(s) added."); refresh();
+      await S.addUnits(pid, d); toast(d.count + " house(s) added."); refresh();
     } });
   }
 
@@ -377,7 +395,7 @@
       ${t ? `<div class="alert-box info" style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap">
         <div><strong>${esc(t.name)}</strong> · ${esc(t.phone)}<br><span class="small">Rent ${S.monthLabel(S.ym())}: ${S.money(r.paid)} of ${S.money(r.expected)} · Deposit ${S.money(S.depositPaid(u))}</span></div>
         <div>${badge(r.status)}</div></div>` : ""}
-      <div class="field-row"><div class="field"><label>House label</label><input name="label" value="${esc(u.label)}" required></div>
+      <div class="field-row"><div class="field"><label>House label</label><input name="label" value="${esc(u.label)}" maxlength="20" required></div>
         <div class="field"><label>Type</label><select name="type">${typeOptions(u.type)}</select></div></div>
       <div class="field-row"><div class="field"><label>Monthly rent (Ksh)</label><input name="rent" type="number" min="0" value="${u.rent}"></div>
         <div class="field"><label>Deposit (Ksh)</label><input name="deposit" type="number" min="0" value="${u.deposit}"></div></div>
@@ -389,43 +407,58 @@
       footer: `<button type="button" class="btn btn-danger btn-sm" data-act="deleteUnit" data-id="${u.id}" style="margin-right:auto">Delete house</button>
         ${t ? `<button type="button" class="btn btn-outline btn-sm" data-act="recordPayment" data-unit="${u.id}">Record payment</button>`
             : `<button type="button" class="btn btn-outline btn-sm" data-act="assignTenant" data-unit="${u.id}">Add tenant</button>`}`,
-      onSubmit: (d) => {
+      onSubmit: async (d) => {
         if (!d.label.trim()) throw new Error("Label is required.");
         if (S.unitsOf(u.propertyId).some((x) => x.id !== u.id && x.label.toLowerCase() === d.label.trim().toLowerCase())) throw new Error("Another house already uses that label.");
-        if (t && (d.status === "vacant" || d.status === "maintenance")) S.vacateUnit(u.id, me.id);
         if (!t && (d.status === "occupied" || d.status === "notice")) { toast("Use “Add tenant” to put someone in this house.", "err"); return false; }
-        S.updateUnit(u.id, { label: d.label.trim(), type: d.type, rent: d.rent, deposit: d.deposit, status: d.status,
-          ...(S.unit(u.id).tenantId && d.leaseStart ? { leaseStart: d.leaseStart } : {}), ...(S.unit(u.id).tenantId && d.leaseEnd ? { leaseEnd: d.leaseEnd } : {}) });
+        const checkingOut = t && (d.status === "vacant" || d.status === "maintenance");
+        await S.updateUnit(u.id, { label: d.label.trim(), type: d.type, rent: d.rent, deposit: d.deposit, status: d.status,
+          leaseStart: checkingOut ? null : d.leaseStart, leaseEnd: checkingOut ? null : d.leaseEnd });
         toast("House " + d.label + " saved."); refresh();
       } });
+  }
+
+  const inviteText = (t) => {
+    const u = S.tenantUnit(t.id);
+    return `Hello ${t.name}, your house ${u ? u.label + " at " + propName(u.propertyId) : ""} is on TrackGimex. ` +
+      `Create a tenant account at ${new URL("login.html?role=tenant&mode=register", location.href).href} ` +
+      `and enter this code to link your house: ${t.inviteCode}`;
+  };
+  function showInvite(t) {
+    const txt = inviteText(t);
+    const phone = (t.phone || "").replace(/\D/g, "").replace(/^0/, "254");
+    modal("Invite " + t.name, `
+      <p class="muted">Give ${esc(t.name)} this code. When they create a tenant account and enter it, they can pay rent and give notice online.</p>
+      <div class="code-box">${esc(t.inviteCode)}</div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap">
+        <a class="btn btn-primary btn-sm" target="_blank" rel="noopener" href="https://wa.me/${phone}?text=${encodeURIComponent(txt)}">Send on WhatsApp</a>
+        <a class="btn btn-outline btn-sm" href="sms:${esc(t.phone)}?body=${encodeURIComponent(txt)}">Send SMS</a>
+        <button type="button" class="btn btn-outline btn-sm" id="copyInvite">Copy message</button></div>`);
+    UI.$("#copyInvite").onclick = async () => { try { await navigator.clipboard.writeText(txt); toast("Copied."); } catch (e) { toast("Copy failed — select the code and copy it.", "err"); } };
   }
 
   function assignTenantModal(unitId) {
     const free = myUnits().filter((u) => !u.tenantId && u.status !== "maintenance");
     if (!free.length) return toast("All your houses are occupied. Add more houses first.", "err");
-    const homeless = S.db.users.filter((x) => x.role === "tenant" && !S.tenantUnit(x.id));
     modal("Add a tenant", `
       <div class="field"><label>House</label><select name="unitId" required>${free.map((u) =>
         `<option value="${u.id}" ${u.id === unitId ? "selected" : ""}>${esc(propName(u.propertyId))} — ${esc(u.label)} (${esc(u.type)}, ${S.money(u.rent)})</option>`).join("")}</select></div>
-      <div class="field"><label>Full name</label><input name="name" required></div>
-      <div class="field-row"><div class="field"><label>Phone</label><input name="phone" placeholder="07XX XXX XXX" required></div>
-        <div class="field"><label>Email (optional)</label><input name="email" type="email"></div></div>
-      <p class="hint" style="margin:-6px 0 14px">If the tenant later registers with this phone or email, the house links to their account automatically.${homeless.length ? " Existing tenants on TrackGimex are matched too." : ""}</p>
+      <div class="field"><label>Full name</label><input name="name" required maxlength="120"></div>
+      <div class="field-row"><div class="field"><label>Phone</label><input name="phone" placeholder="07XX XXX XXX" required maxlength="30"></div>
+        <div class="field"><label>Email (optional)</label><input name="email" type="email" maxlength="254"></div></div>
+      <p class="hint" style="margin:-6px 0 14px">You'll get an invite code to send them. If they sign up with this email, their house is linked automatically.</p>
       <div class="field-row"><div class="field"><label>Move-in date</label><input type="date" name="start" value="${S.today()}"></div>
         <div class="field"><label>Lease length</label><select name="months"><option value="6">6 months</option><option value="12" selected>12 months</option><option value="24">24 months</option></select></div></div>
       <label class="check"><input type="checkbox" name="depositPaid"> Deposit already paid (record as cash)</label>
       <label class="check" style="margin-top:8px"><input type="checkbox" name="rentPaid"> This month's rent already paid (record as cash)</label>`,
-    { submitText: "Add tenant", onSubmit: (d) => {
+    { submitText: "Add tenant", onSubmit: async (d) => {
       if (!d.name.trim() || !d.phone.trim()) throw new Error("Name and phone are required.");
-      const t = S.addOfflineTenant({ name: d.name.trim(), phone: d.phone.trim(), email: d.email.trim() });
-      S.assignTenant(d.unitId, t.id, d.start, +d.months);
+      if (d.email && !/^\S+@\S+\.\S+$/.test(d.email.trim())) throw new Error("That email doesn't look right.");
+      const res = await S.addTenant({ ...d, name: d.name.trim(), phone: d.phone.trim(), email: d.email.trim() });
       const u = S.unit(d.unitId);
-      S.notify(t.id, "You have been added as the tenant of " + u.label + " at " + propName(u.propertyId) + ".", "home");
-      if (d.depositPaid && u.deposit) S.recordPayment({ unitId: u.id, tenantId: t.id, kind: "deposit", amount: u.deposit, method: "Cash", recordedBy: me.id });
-      if (d.rentPaid) S.recordPayment({ unitId: u.id, tenantId: t.id, kind: "rent", month: S.ym(), amount: u.rent, method: "Cash", recordedBy: me.id });
-      S.save();
       toast(d.name + " moved into " + u.label + ".");
       refresh();
+      if (!res.linked) setTimeout(() => showInvite(S.user(res.tenant_id)), 50);
     } });
   }
 
@@ -441,11 +474,10 @@
         <div class="field" id="pmMonthF"><label>Month</label><input type="month" name="month" id="pmMonth" value="${state.month}"></div></div>
       <div class="field-row"><div class="field"><label>Amount (Ksh)</label><input type="number" name="amount" id="pmAmt" min="1" value="${r0.balance || u0.rent}" required></div>
         <div class="field"><label>Method</label><select name="method"><option>Cash</option><option>M-Pesa</option><option>Bank</option><option>Cheque</option></select></div></div>
-      <div class="field"><label>Reference (M-Pesa code / bank ref)</label><input name="ref" placeholder="optional"></div>`,
-    { submitText: "Save & issue receipt", onSubmit: (d) => {
+      <div class="field"><label>Reference (M-Pesa code / bank ref)</label><input name="ref" maxlength="60" placeholder="optional"></div>`,
+    { submitText: "Save & issue receipt", onSubmit: async (d) => {
       if (!(+d.amount > 0)) throw new Error("Enter an amount.");
-      const u = S.unit(d.unitId);
-      const p = S.recordPayment({ unitId: u.id, tenantId: u.tenantId, kind: d.kind, month: d.month, amount: d.amount, method: d.method, ref: d.ref, recordedBy: me.id });
+      const p = await S.recordPayment(d);
       toast("Payment saved. Receipt " + p.receiptNo);
       refresh();
       setTimeout(() => UI.receipt(p), 50);
@@ -461,37 +493,37 @@
 
   function remindText(u) {
     const r = S.rentStatus(u, state.month);
-    return `Reminder: your rent balance of ${S.money(r.balance)} for ${S.monthLabel(state.month)} (house ${u.label}, ${propName(u.propertyId)}) is due. Please pay through TrackGimex or contact your landlord.`;
+    return `Reminder: your rent balance of ${S.money(r.balance)} for ${S.monthLabel(state.month)} (house ${u.label}, ${propName(u.propertyId)}) is due. Please pay and enter the M-Pesa code in TrackGimex, or contact your landlord.`;
   }
 
   /* ======================= ACTIONS ======================= */
   const actions = {
     addProperty: () => propertyModal(null),
     editProperty: (d) => propertyModal(S.property(d.id)),
-    deleteProperty: (d) => confirmBox(`Delete ${propName(d.id)} and all its houses? Payment history is kept.`, () => {
-      S.deleteProperty(d.id); state.propertyId = null; toast("Building deleted."); refresh(); }, "Delete building"),
+    deleteProperty: (d) => confirmBox(`Delete ${propName(d.id)} and all its houses? Payment history is kept.`, async () => {
+      await S.deleteProperty(d.id); state.propertyId = null; toast("Building deleted."); refresh(); }, "Delete building"),
     openProperty: (d) => { state.propertyId = d.id; refresh(); },
     backToProps: () => { state.propertyId = null; refresh(); },
     addUnits: (d) => addUnitsModal(d.id),
     editUnit: (d) => unitModal(d.id),
     deleteUnit: (d) => { const u = S.unit(d.id);
       if (u.tenantId) return toast("Check the tenant out before deleting this house.", "err");
-      confirmBox("Delete house " + u.label + "?", () => { S.deleteUnit(d.id); toast("House deleted."); refresh(); }, "Delete"); },
+      confirmBox("Delete house " + u.label + "?", async () => { await S.deleteUnit(d.id); toast("House deleted."); refresh(); }, "Delete"); },
     goCheck: (d) => { state.checkProp = d.id; location.hash = "check"; },
     setCheckProp: (d, el) => { state.checkProp = el.value; refresh(); },
     setCheckMonth: (d, el) => { state.checkMonth = el.value || S.ym(); refresh(); },
     checkAll: () => UI.$$("#checkForm select").forEach((s) => { const u = S.unit(s.name); if (u.tenantId && u.status !== "notice") s.value = "occupied"; }),
-    saveCheck: () => {
+    saveCheck: async () => {
       const items = UI.$$("#checkForm select").map((s) => ({ unitId: s.name, status: s.value }));
       const out = items.filter((i) => { const u = S.unit(i.unitId); return u.tenantId && (i.status === "vacant" || i.status === "maintenance"); });
       const badOcc = items.filter((i) => { const u = S.unit(i.unitId); return !u.tenantId && (i.status === "occupied" || i.status === "notice"); });
-      const run = () => {
-        S.saveCheck(me.id, state.checkProp, state.checkMonth, items);
-        toast(`Check for ${S.monthLabel(state.checkMonth)} saved.` + (badOcc.length ? ` Add tenant details for ${badOcc.map((i) => S.unit(i.unitId).label).join(", ")}.` : ""));
+      const go = async () => {
+        await S.saveCheck(S.me.id, state.checkProp, state.checkMonth, items);
+        toast(`Check for ${S.monthLabel(state.checkMonth)} saved.` + (badOcc.length ? ` ${badOcc.map((i) => S.unit(i.unitId).label).join(", ")} need a tenant added before they can be occupied.` : ""));
         refresh();
       };
-      if (out.length) confirmBox(`This will check out the tenant(s) in ${out.map((i) => S.unit(i.unitId).label).join(", ")}. Continue?`, run);
-      else run();
+      if (out.length) confirmBox(`This will check out the tenant(s) in ${out.map((i) => S.unit(i.unitId).label).join(", ")}. Continue?`, go);
+      else await go();
     },
     setMonth: (d, el) => { state.month = el.value || S.ym(); refresh(); },
     setRentProp: (d, el) => { state.rentProp = el.value; refresh(); },
@@ -500,66 +532,72 @@
     setPayMonth: (d, el) => { state.payMonth = el.value; refresh(); },
     clearPayMonth: () => { state.payMonth = ""; refresh(); },
     recordPayment: (d) => paymentModal(d.unit),
+    confirmPay: async (d) => { await S.reviewPayment(d.id, true); toast("Payment confirmed. The tenant has been notified."); refresh(); },
+    rejectPay: (d) => confirmBox("Reject this payment? Only do this if the code is not on your statement.", async () => {
+      await S.reviewPayment(d.id, false); toast("Payment rejected. The tenant has been notified."); refresh(); }, "Reject"),
     markPaid: (d) => { const u = S.unit(d.unit); const r = S.rentStatus(u, state.month);
-      confirmBox(`Record ${S.money(r.balance)} cash for ${u.label} (${S.monthLabel(state.month)})?`, () => {
-        const p = S.recordPayment({ unitId: u.id, tenantId: u.tenantId, kind: "rent", month: state.month, amount: r.balance, method: "Cash", recordedBy: me.id });
+      confirmBox(`Record ${S.money(r.balance)} cash for ${u.label} (${S.monthLabel(state.month)})?`, async () => {
+        const p = await S.recordPayment({ unitId: u.id, kind: "rent", month: state.month, amount: r.balance, method: "Cash", ref: "" });
         toast("Marked as paid. Receipt " + p.receiptNo); refresh(); }, "Mark paid"); },
-    remind: (d) => { const u = S.unit(d.unit); const t = S.user(u.tenantId);
-      S.notify(t.id, remindText(u), "home"); S.save();
-      toast(t.pass ? "Reminder sent to " + t.name + "." : t.name + " has no TrackGimex account yet — reminder saved; also call/SMS " + t.phone + "."); },
-    remindAll: () => { const rows = rentRows().filter((x) => x.r.balance > 0);
-      rows.forEach(({ u }) => S.notify(u.tenantId, remindText(u), "home")); S.save();
-      toast(rows.length ? `Reminders sent to ${rows.length} tenant(s).` : "Nobody owes rent for this month."); },
+    remind: async (d) => { const u = S.unit(d.unit); const t = S.user(u.tenantId);
+      const ok = await S.notifyTenant(u.id, remindText(u));
+      toast(ok ? "Reminder sent to " + t.name + "." : t.name + " has no TrackGimex account yet. Call or SMS them on " + t.phone + "."); },
+    remindAll: async () => { const rows = rentRows().filter((x) => x.r.balance > 0);
+      let sent = 0;
+      for (const { u } of rows) if (await S.notifyTenant(u.id, remindText(u))) sent++;
+      toast(rows.length ? `Reminders sent to ${sent} tenant(s).` + (rows.length > sent ? ` ${rows.length - sent} have no account yet — call or SMS them.` : "") : "Nobody owes rent for this month."); },
     exportRent: () => UI.downloadCSV(`rent-${state.month}.csv`, [["Building", "House", "Tenant", "Phone", "Rent", "Paid", "Balance", "Status"],
       ...rentRows().map(({ u, r }) => [propName(u.propertyId), u.label, tenantName(u), S.user(u.tenantId)?.phone, r.expected, r.paid, r.balance, r.status])]),
-    exportPayments: () => UI.downloadCSV("payments.csv", [["Date", "Receipt", "Building", "House", "Tenant", "For", "Month", "Method", "Ref", "Amount", "Refunded"],
-      ...myPayments().map((p) => [p.date.slice(0, 10), p.receiptNo, propName(p.propertyId), S.unit(p.unitId)?.label, S.user(p.tenantId)?.name, p.kind, p.month || "", p.method, p.ref, p.amount, p.refunded ? "yes" : ""])]),
+    exportPayments: () => UI.downloadCSV("payments.csv", [["Date", "Receipt", "Building", "House", "Tenant", "For", "Month", "Method", "Ref", "Amount", "Status"],
+      ...myPayments().map((p) => [p.date.slice(0, 10), p.receiptNo, propName(p.propertyId), p.unitLabel, S.user(p.tenantId)?.name, p.kind, p.month || "", p.method, p.ref, p.amount, p.status])]),
     receipt: (d) => UI.receipt(S.db.payments.find((p) => p.id === d.id)),
-    deletePayment: (d) => confirmBox("Delete this payment record?", () => { S.deletePayment(d.id); toast("Payment deleted."); refresh(); }, "Delete"),
+    deletePayment: (d) => confirmBox("Delete this payment record?", async () => { await S.deletePayment(d.id); toast("Payment deleted."); refresh(); }, "Delete"),
     assignTenant: (d) => assignTenantModal(d.unit),
+    shareCode: (d) => showInvite(S.user(d.tenant)),
     vacate: (d) => { const u = S.unit(d.unit); const r = S.rentStatus(u, S.ym());
       confirmBox(`Check ${tenantName(u)} out of ${u.label}? The house will be marked empty and shown to house hunters.` + (r.balance ? ` Note: they still owe ${S.money(r.balance)} this month.` : ""),
-        () => { S.vacateUnit(u.id, me.id); toast(u.label + " is now empty."); refresh(); }, "Check out"); },
+        async () => { await S.vacateUnit(u.id); toast(u.label + " is now empty."); refresh(); }, "Check out"); },
     message: (d) => { const u = S.unit(d.unit); const t = S.user(u.tenantId);
-      modal("Message " + t.name, `<div class="field"><label>Message</label><textarea name="text" required></textarea></div>
-        ${t.pass ? "" : `<p class="hint">${esc(t.name)} hasn't registered on TrackGimex. The message will appear when they do. You can also SMS ${esc(t.phone)}.</p>`}`,
-      { submitText: "Send", onSubmit: (f) => { if (!f.text.trim()) throw new Error("Type a message."); S.notify(t.id, "Message from " + me.name + ": " + f.text.trim(), "home"); S.save(); toast("Message sent."); } }); },
+      modal("Message " + t.name, `<div class="field"><label>Message</label><textarea name="text" maxlength="900" required></textarea></div>
+        ${t.hasAccount ? "" : `<p class="hint">${esc(t.name)} hasn't joined TrackGimex yet, so they won't see this. Call or SMS ${esc(t.phone)}, or send them their invite code.</p>`}`,
+      { submitText: "Send", onSubmit: async (f) => { if (!f.text.trim()) throw new Error("Type a message.");
+        const ok = await S.notifyTenant(u.id, "Message from " + S.me.name + ": " + f.text.trim());
+        toast(ok ? "Message sent." : t.name + " has no account yet — message not delivered."); } }); },
     announce: () => modal("Send announcement", `
       <div class="field"><label>To tenants of</label><select name="prop">${propOptions("", true).replace("All properties", "All my buildings")}</select></div>
-      <div class="field"><label>Message</label><textarea name="text" required placeholder="e.g. Water will be off on Saturday from 9am to 1pm."></textarea></div>`,
-    { submitText: "Send to all", onSubmit: (f) => {
+      <div class="field"><label>Message</label><textarea name="text" maxlength="900" required placeholder="e.g. Water will be off on Saturday from 9am to 1pm."></textarea></div>`,
+    { submitText: "Send to all", onSubmit: async (f) => {
       if (!f.text.trim()) throw new Error("Type a message.");
-      const ts = myUnits().filter((u) => u.tenantId && (!f.prop || u.propertyId === f.prop));
-      ts.forEach((u) => S.notify(u.tenantId, "📢 " + propName(u.propertyId) + ": " + f.text.trim(), "home")); S.save();
-      toast(`Announcement sent to ${ts.length} tenant(s).`); } }),
+      const r = await S.announce(f.prop, f.text.trim());
+      toast(`Announcement sent to ${r.sent} tenant(s).` + (r.offline ? ` ${r.offline} have no account yet.` : "")); } }),
     approve: (d) => { const r = S.db.requests.find((x) => x.id === d.id); const u = S.unit(r.unitId);
       if (u.tenantId) return toast(u.label + " already has a tenant.", "err");
-      const already = S.tenantUnit(r.tenantId);
-      if (already) return toast(S.user(r.tenantId).name + " already rents " + already.label + ".", "err");
-      confirmBox(`Approve ${S.user(r.tenantId).name} for ${u.label}? They will be moved in today with a 12-month lease.`, () => {
-        S.decideRequest(r.id, true); toast("Approved. " + u.label + " is now occupied."); refresh(); }, "Approve"); },
+      const pays = requestPayments(r).filter((p) => p.status === "pending");
+      confirmBox(`Approve ${S.user(r.tenantId)?.name} for ${u.label}? They will be moved in today with a 12-month lease.` +
+        (pays.length ? ` This also CONFIRMS their payment(s): ${pays.map((p) => S.money(p.amount) + " ref " + p.ref).join(", ")}. Only approve if you have received it.` : ""),
+        async () => { await S.decideRequest(r.id, true); toast("Approved. " + u.label + " is now occupied."); refresh(); }, "Approve"); },
     decline: (d) => { const r = S.db.requests.find((x) => x.id === d.id);
-      confirmBox("Decline this request?" + (r.paid ? " The tenant's payment will be marked for refund." : ""), () => { S.decideRequest(r.id, false); toast("Request declined."); refresh(); }, "Decline"); },
-    ackNotice: (d) => { S.acknowledgeNotice(d.id); toast("Tenant notified that you received the notice."); refresh(); },
+      confirmBox("Decline this request?" + (r.paid ? " If the tenant really paid you, you must refund them." : ""), async () => { await S.decideRequest(r.id, false); toast("Request declined."); refresh(); }, "Decline"); },
+    ackNotice: async (d) => { await S.acknowledgeNotice(d.id); toast("Tenant notified that you received the notice."); refresh(); },
     addExpense: () => modal("Add expense", `
       <div class="field-row"><div class="field"><label>Building</label><select name="propertyId"><option value="">General</option>${propOptions("")}</select></div>
         <div class="field"><label>Category</label><select name="category">${["Repairs", "Water", "Electricity", "Security", "Cleaning", "Caretaker", "Taxes", "Other"].map((c) => `<option>${c}</option>`).join("")}</select></div></div>
       <div class="field-row"><div class="field"><label>Amount (Ksh)</label><input type="number" name="amount" min="1" required></div>
         <div class="field"><label>Date</label><input type="date" name="date" value="${S.today()}"></div></div>
-      <div class="field"><label>Note</label><input name="note" placeholder="e.g. Fixed tap in A3"></div>`,
-    { submitText: "Add expense", onSubmit: (f) => { if (!(+f.amount > 0)) throw new Error("Enter an amount."); S.addExpense(me.id, f); toast("Expense added."); refresh(); } }),
-    deleteExpense: (d) => { S.deleteExpense(d.id); toast("Expense removed."); refresh(); },
-    renew: (d) => { S.renewLease(d.unit, +d.m); toast("Lease renewed to " + S.fmtDate(S.unit(d.unit).leaseEnd) + "."); refresh(); },
-    saveProfile: () => { const f = Object.fromEntries(new FormData(UI.$("#profileForm")));
-      Object.assign(me, { name: f.name.trim() || me.name, phone: f.phone, kind: f.kind }); S.save(); toast("Profile saved."); location.reload(); },
-    resetData: () => confirmBox("Reset all data to the demo? This cannot be undone.", () => { S.reset(); S.logout(); location.href = "login.html"; }, "Reset"),
+      <div class="field"><label>Note</label><input name="note" maxlength="300" placeholder="e.g. Fixed tap in A3"></div>`,
+    { submitText: "Add expense", onSubmit: async (f) => { if (!(+f.amount > 0)) throw new Error("Enter an amount."); await S.addExpense(S.me.id, f); toast("Expense added."); refresh(); } }),
+    deleteExpense: (d) => confirmBox("Delete this expense?", async () => { await S.deleteExpense(d.id); toast("Expense removed."); refresh(); }, "Delete"),
+    renew: async (d) => { await S.renewLease(d.unit, +d.m); toast("Lease renewed to " + S.fmtDate(S.unit(d.unit).leaseEnd) + "."); refresh(); },
+    saveProfile: async () => { const f = Object.fromEntries(new FormData(UI.$("#profileForm")));
+      if (!f.name.trim()) throw new Error("Enter your name.");
+      await S.updateProfile({ name: f.name.trim(), phone: f.phone.trim(), kind: f.kind, payoutInfo: f.payoutInfo.trim() });
+      toast("Profile saved."); refresh(); },
   };
 
   const after = {
     tenants: () => { const s = UI.$("#tSearch"); if (s) s.oninput = () => UI.$$("#tTable tbody tr").forEach((tr) => (tr.hidden = !tr.dataset.search.includes(s.value.toLowerCase()))); },
   };
 
-  if (!me || me.role !== "landlord") me = null;
   Shell.init({
     role: "landlord",
     nav: [["overview", "Overview", "home"], ["properties", "Buildings & houses", "building"], ["check", "Monthly check", "check"],
@@ -568,6 +606,7 @@
       ["leases", "Leases", "file"], ["notifications", "Notifications", "bell"], ["settings", "Settings", "users"]],
     views, actions, after,
     counts: (m) => ({ requests: pendingRequests().length, moveouts: openNotices().filter((n) => n.status === "pending").length,
+      payments: S.db.payments.filter((p) => p.status === "pending" && !S.db.requests.some((r) => r.unitId === p.unitId && r.tenantId === p.tenantId && r.status === "pending")).length,
       notifications: S.notificationsOf(m.id).filter((n) => !n.read).length }),
   });
 })();

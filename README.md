@@ -10,9 +10,9 @@ A rent-tracking web app for Kenyan landlords, agents and tenants. Landlords set 
 | 0 | Own repository, clean structure | ✅ Done |
 | 1 | Backend: real accounts and a shared online database (Supabase) | ✅ Done |
 | 2 | M-Pesa payments to each landlord's own Paybill / Till (Daraja) | ✅ Done (first live Paybill pending) |
-| 3 | Go live: hosting, domain, email sending, legal, backups, pilot landlords | ⏳ Next |
+| 3 | Go live: hosting, email sending, legal pages | ✅ Live at https://trackgimex.netlify.app (domain, backups, lawyer review: see checklist) |
 
-> **Current state:** real accounts and a shared online database (Supabase). Landlords who connect their M-Pesa Paybill/Till get paid by PIN prompt, confirmed automatically; others use the manual code + confirm method. Don't launch to the public until Stage 3 (hosting, email sending, legal) is done.
+> **Live:** https://trackgimex.netlify.app — real accounts (Supabase), M-Pesa prompts to landlords' own Paybill/Till, email via Brevo, privacy policy and terms.
 
 ## Folder layout
 ```
@@ -58,6 +58,26 @@ supabase/
 - **Authentication → Email → Confirm email: ON.**
 - **Authentication → SMTP:** add your own email sender (e.g. Resend or Brevo). Supabase's built-in sender only delivers to your own team's addresses and a few emails per hour — real users would never get their confirmation or password-reset emails.
 - **Authentication → URL Configuration:** Site URL = your live address; add it to Redirect URLs.
+
+## Hosting & services (Stage 3)
+| Service | What for | Where to manage |
+|---|---|---|
+| **Netlify** | Hosts `public/` at https://trackgimex.netlify.app; deploys automatically on every push to the production branch. Settings in `netlify.toml` (security headers, caching, short URLs). | app.netlify.com |
+| **Supabase** | Database, logins, server functions (`supabase/`) | supabase.com/dashboard |
+| **Brevo** | Sends sign-up / password-reset emails (SMTP set in Supabase → Authentication → Emails) | brevo.com |
+| **Safaricom Daraja** | M-Pesa prompts (each landlord's own keys; TrackGimex sandbox keys for test mode) | developer.safaricom.co.ke |
+
+- Email designs live in `supabase/templates/` (Supabase → Authentication → Emails → Templates).
+- Supabase **Authentication → URL Configuration**: Site URL `https://trackgimex.netlify.app`, Redirect URL `https://trackgimex.netlify.app/**`. Update both if you add your own domain.
+- Legal pages: `public/privacy.html`, `public/terms.html` (draft — have a lawyer review).
+
+### Launch checklist (owner)
+- [ ] Netlify: set the production branch to `main`
+- [ ] Supabase: upgrade to Pro for daily backups before real landlords' data goes in
+- [ ] Register the business name (eCitizen / BRS) and with the ODPC (odpc.go.ke)
+- [ ] Lawyer reviews privacy policy and terms
+- [ ] Optional: buy a domain, connect it in Netlify, verify it in Brevo, update Supabase URLs
+- [ ] First live Paybill/Till: landlord completes Daraja Go Live, connects in Settings, passes the Ksh 1 test
 
 ## Run it locally
 No install needed: open `public/index.html` in a browser.

@@ -47,7 +47,7 @@
           </div>
           <div class="field"><label for="rp">Password</label><input id="rp" name="password" type="password" minlength="8" autocomplete="new-password" required>
             <p class="hint">At least 8 characters.</p></div>
-          <label class="check small" style="margin-bottom:16px"><input type="checkbox" name="agree" required> I agree to the terms of use and privacy policy</label>
+          <label class="check small" style="margin-bottom:16px"><input type="checkbox" name="agree" required> <span>I agree to the <a href="terms.html" target="_blank" rel="noopener">terms of use</a> and <a href="privacy.html" target="_blank" rel="noopener">privacy policy</a></span></label>
           <button class="btn btn-primary btn-block" type="submit">Create account</button>
         </form>
 
@@ -68,7 +68,7 @@
     </main>
   </div>
 
-  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.118.0/dist/umd/supabase.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.118.0/dist/umd/supabase.js" integrity="sha384-TcHRA3zBbn+Lexh5n+Oil4guNPOS3rjNDpGRAN46u/s/mB2IZ50ceC6TYDU2yvgK" crossorigin="anonymous"></script>
   <script src="js/config.js"></script>
   <script src="js/store.js"></script>
   <script src="js/ui.js"></script>
@@ -122,7 +122,10 @@
       if (!e.target.agree.checked) return UI.toast("Please accept the terms to continue.", "err");
       busy(e.target, async () => {
         const r = await Store.register({ ...f, role });
-        if (r.needsConfirmation) sent(`<strong>Check your email.</strong> We sent a confirmation link to <strong>${UI.esc(f.email)}</strong>. Click it, then log in here. (Check your spam folder too.)`);
+        if (r.needsConfirmation) sent(`<strong>Check your email.</strong> We sent a confirmation link to <strong>${UI.esc(f.email)}</strong>. Click it, then log in here. (Check your spam folder too.)
+          <br><br><span class="small">No email after a few minutes? If you already have a TrackGimex account with this address, no new email is sent —
+          <button type="button" data-mode="login" style="background:none;border:0;color:inherit;text-decoration:underline;cursor:pointer;font:inherit">log in</button> or use
+          <button type="button" data-mode="forgot" style="background:none;border:0;color:inherit;text-decoration:underline;cursor:pointer;font:inherit">Forgot password</button>.</span>`);
         else go(r.profile);
       });
     };

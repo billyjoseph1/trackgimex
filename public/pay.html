@@ -91,7 +91,7 @@
           <h4 style="margin-bottom:12px">${ll.mpesaReady ? "" : "2. "}Pay ${esc(ll.name)}</h4>
           ${ll.payoutInfo ? `<div class="alert-box info" style="white-space:pre-line"><strong>How to pay:</strong>\n${esc(ll.payoutInfo)}</div>`
             : `<div class="alert-box warn">${esc(ll.name)} hasn't added payment details yet. Call ${ll.phone ? `<a href="tel:${esc(ll.phone)}">${esc(ll.phone)}</a>` : "them"} to ask how to pay.</div>`}
-          <p class="muted small">If asked for an account number, use <strong>${esc(account)}</strong>. Pay <strong id="payAmt"></strong>, then wait for the confirmation SMS.</p>
+          <p class="muted small">${/^M-Pesa Send Money/.test(ll.payoutInfo) ? "" : `If asked for an account number, use <strong>${esc(account)}</strong>. `}Pay <strong id="payAmt"></strong>, then wait for the confirmation SMS.</p>
         </div>
         <div class="card">
           <h4 style="margin-bottom:12px">${ll.mpesaReady ? "" : "3. "}Enter the confirmation code</h4>

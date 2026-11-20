@@ -593,7 +593,7 @@
     renew: async (d) => { await S.renewLease(d.unit, +d.m); toast("Lease renewed to " + S.fmtDate(S.unit(d.unit).leaseEnd) + "."); refresh(); },
     connectMpesa: () => mpesaModal(),
     testMpesa: () => testPromptModal(),
-    disconnectMpesa: () => confirmBox("Disconnect M-Pesa? Your keys will be deleted and tenants will go back to entering M-Pesa codes.", async () => {
+    disconnectMpesa: () => confirmBox("Disconnect your Paybill / Till? Your keys will be deleted and tenants will go back to entering M-Pesa codes.", async () => {
       await S.disconnectMpesa(); toast("M-Pesa disconnected."); refresh(); }, "Disconnect"),
     saveProfile: async () => { const f = Object.fromEntries(new FormData(UI.$("#profileForm")));
       if (!f.name.trim()) throw new Error("Enter your name.");
@@ -601,39 +601,42 @@
       toast("Profile saved."); refresh(); },
   };
 
+  const phonePayout = () => (S.me.payoutInfo || "").match(/^M-Pesa Send Money to (\+?\d[\d ]{8,14})/);
+
   async function fillMpesa() {
     const box = UI.$("#mpesaBox");
     if (!box) return;
     let st;
     try { st = await S.mpesaStatus(); } catch (err) { box.innerHTML = `<p class="muted">${esc(err.message)}</p>`; return; }
     if (!UI.$("#mpesaBox")) return;
-    if (!st.connected) {
-      box.innerHTML = `<p class="muted" style="margin-bottom:14px">Not connected. Tenants can still pay you and enter the M-Pesa code for you to confirm.</p>
-        <button class="btn btn-primary" data-act="connectMpesa">Connect M-Pesa</button>`;
+    const ph = phonePayout();
+    if (!st.connected || st.environment !== "production") {
+      box.innerHTML = `${st.connected ? `<div class="alert-box warn">Your old test connection is no longer used. Connect your live Paybill or Till below.</div>` : ""}
+        ${ph ? `<div class="alert-box info"><strong>Tenants pay to your M-Pesa number ${esc(ph[1])}</strong> (Send Money). They enter the M-Pesa code and you confirm it under <a href="#payments">Payments</a>.</div>`
+             : `<p class="muted" style="margin-bottom:14px">Not set up yet. Choose how tenants pay you: your Paybill, your Till, or your M-Pesa phone number.</p>`}
+        <button class="btn ${ph ? "btn-outline" : "btn-primary"}" data-act="connectMpesa">${ph ? "Change" : "Set up M-Pesa"}</button>`;
       return;
     }
-    const live = st.environment === "production";
-    const where = (st.type === "till" ? "Till " + esc(st.partyB) + " (store " + esc(st.shortcode) + ")" : "Paybill " + esc(st.shortcode)) +
-      (st.sharedSandbox ? " · TrackGimex test keys" : "");
+    const where = st.type === "till" ? "Till " + esc(st.partyB) + " (store " + esc(st.shortcode) + ")" : "Paybill " + esc(st.shortcode);
     box.innerHTML = `
-      <div class="alert-box ${live ? "info" : "warn"}"><strong>${live ? "Live" : "Test mode (Safaricom sandbox — no real money)"}</strong> · ${where}</div>
+      <div class="alert-box info"><strong>${where}</strong> · tenants get an M-Pesa prompt and payments are confirmed automatically.</div>
       ${st.tested
-        ? `<div class="alert-box info">✓ <strong>Tested ${S.fmtDate(st.testedAt)}</strong> — a Ksh 1 test payment went through. Your tenants see <em>Pay with M-Pesa</em>.</div>`
-        : `<div class="alert-box warn"><strong>One last step:</strong> send a Ksh 1 test prompt to your own phone. Tenants can pay you by M-Pesa only after the test succeeds — it proves your ${st.type === "till" ? "Till" : "Paybill"}, keys and passkey are correct.</div>`}
+        ? `<div class="alert-box info">✓ <strong>Verified ${S.fmtDate(st.testedAt)}</strong> — a Ksh 1 payment reached your ${st.type === "till" ? "Till" : "Paybill"}. Your tenants see <em>Pay with M-Pesa</em>.</div>`
+        : `<div class="alert-box warn"><strong>One last step:</strong> verify with a Ksh 1 payment from your own phone. Tenants can pay by M-Pesa prompt only after this succeeds — it proves your ${st.type === "till" ? "Till" : "Paybill"}, keys and passkey are correct.</div>`}
       <div style="display:flex;gap:10px;flex-wrap:wrap">
-        <button class="btn ${st.tested ? "btn-outline" : "btn-primary"}" data-act="testMpesa">${st.tested ? "Send another test" : "Send test prompt (Ksh 1)"}</button>
-        <button class="btn btn-outline" data-act="connectMpesa">Change details</button>
+        <button class="btn ${st.tested ? "btn-outline" : "btn-primary"}" data-act="testMpesa">${st.tested ? "Verify again (Ksh 1)" : "Verify with Ksh 1"}</button>
+        <button class="btn btn-outline" data-act="connectMpesa">Change</button>
         <button class="btn btn-danger" data-act="disconnectMpesa">Disconnect</button></div>`;
   }
 
   function mpesaModal() {
-    modal("Connect M-Pesa", `
-      <div class="field"><label>Mode</label><select name="mode" id="mpMode">
-        <option value="live_paybill">Live — my Paybill</option>
-        <option value="live_till">Live — my Till (Buy Goods)</option>
-        <option value="sandbox">Test — my own Daraja sandbox app</option>
-        <option value="shared">Test — TrackGimex test keys (quick try, no keys needed)</option></select></div>
-      <div id="mpFields">
+    const ph = phonePayout();
+    modal("Set up M-Pesa", `
+      <div class="field"><label>How do tenants pay you?</label><select name="mode" id="mpMode">
+        <option value="paybill">Paybill</option>
+        <option value="till">Till (Buy Goods)</option>
+        <option value="phone" ${ph ? "selected" : ""}>My M-Pesa phone number (Send Money)</option></select></div>
+      <div id="mpDaraja">
         <div class="field-row">
           <div class="field"><label id="mpShortLabel">Paybill number</label><input name="shortcode" inputmode="numeric" maxlength="8" placeholder="e.g. 123456"></div>
           <div class="field" id="mpTillF" hidden><label>Till number</label><input name="partyB" inputmode="numeric" maxlength="8" placeholder="e.g. 987654"></div>
@@ -641,37 +644,49 @@
         <div class="field"><label>Consumer Key</label><input name="key" autocomplete="off" spellcheck="false"></div>
         <div class="field"><label>Consumer Secret</label><input name="secret" type="password" autocomplete="off"></div>
         <div class="field"><label>Passkey</label><input name="passkey" type="password" autocomplete="off"></div>
-        <p class="hint">Get these from <strong>developer.safaricom.co.ke</strong> → your app (live keys come after <em>Go Live</em>; Safaricom emails the passkey).
+        <p class="hint">From <strong>developer.safaricom.co.ke</strong> after <em>Go Live</em> for your Paybill / Till (Safaricom emails the passkey).
           Leave a key blank to keep the one already saved. Keys are checked with Safaricom and stored encrypted — nobody, including you, can view them again.</p>
       </div>
-      <p class="hint" id="mpSharedNote" hidden>Uses Safaricom's sandbox (Paybill 174379). Prompts go to your phone but <strong>no real money moves</strong>. Switch to Live before real tenants pay.</p>`,
-    { submitText: "Check & connect", onSubmit: async (f) => {
-      const m = f.mode;
-      const d = { sharedSandbox: m === "shared", environment: m.startsWith("live") ? "production" : "sandbox",
-        type: m === "live_till" ? "till" : "paybill", shortcode: (f.shortcode || "").trim(), partyB: (f.partyB || "").trim(),
-        key: f.key, secret: f.secret, passkey: f.passkey };
-      if (m === "sandbox" && !d.shortcode) d.shortcode = "174379";
+      <div id="mpPhone" hidden>
+        <div class="field"><label>M-Pesa phone number</label><input name="phone" inputmode="tel" maxlength="13" placeholder="07XX XXX XXX" value="${esc(ph ? ph[1] : S.me.phone)}"></div>
+        <p class="hint">Tenants send money to this number, then enter the M-Pesa code in TrackGimex. You confirm each payment under <strong>Payments</strong>.
+          (Automatic M-Pesa prompts only work with a Paybill or Till — Safaricom doesn't allow them for personal numbers.)</p>
+      </div>`,
+    { submitText: "Save", onSubmit: async (f) => {
+      if (f.mode === "phone") {
+        const num = (f.phone || "").replace(/\s+/g, "");
+        if (!/^(?:\+?254|0)(?:7|1)\d{8}$/.test(num)) throw new Error("Enter a valid Safaricom number, e.g. 0712 345 678.");
+        let st = null; try { st = await S.mpesaStatus(); } catch (e) { /* ignore */ }
+        if (st && st.connected) await S.disconnectMpesa();
+        await S.updateProfile({ name: S.me.name, phone: S.me.phone, kind: S.me.kind, payoutInfo: "M-Pesa Send Money to " + num + " (" + S.me.name + ")" });
+        toast("Saved. Tenants will send money to " + num + " and enter the code for you to confirm.");
+        refresh();
+        return;
+      }
+      const d = { sharedSandbox: false, environment: "production", type: f.mode === "till" ? "till" : "paybill",
+        shortcode: (f.shortcode || "").trim(), partyB: (f.partyB || "").trim(), key: f.key, secret: f.secret, passkey: f.passkey };
       await S.connectMpesa(d);
-      toast("Keys accepted by Safaricom. Now send yourself a Ksh 1 test prompt.");
+      if (phonePayout()) await S.updateProfile({ name: S.me.name, phone: S.me.phone, kind: S.me.kind, payoutInfo: "" });
+      toast("Keys accepted by Safaricom. Now verify with a Ksh 1 payment from your phone.");
       refresh();
       setTimeout(testPromptModal, 100);
     } });
     const sync = () => {
       const m = UI.$("#mpMode").value;
-      UI.$("#mpFields").hidden = m === "shared";
-      UI.$("#mpSharedNote").hidden = m !== "shared";
-      UI.$("#mpTillF").hidden = m !== "live_till";
-      UI.$("#mpShortLabel").textContent = m === "live_till" ? "Store number (Head office)" : m === "sandbox" ? "Shortcode (sandbox: 174379)" : "Paybill number";
+      UI.$("#mpDaraja").hidden = m === "phone";
+      UI.$("#mpPhone").hidden = m !== "phone";
+      UI.$("#mpTillF").hidden = m !== "till";
+      UI.$("#mpShortLabel").textContent = m === "till" ? "Store number (Head office)" : "Paybill number";
     };
     UI.$("#mpMode").addEventListener("change", sync); sync();
   }
 
   function testPromptModal() {
-    modal("Send a test prompt", `
+    modal("Verify with Ksh 1", `
       <p class="muted" style="margin-bottom:14px">We'll send a <strong>Ksh 1</strong> M-Pesa prompt to your phone, paid into your own Paybill / Till.
         Enter your PIN, then check the Ksh 1 arrives in your business account. This proves tenants' payments will reach you.</p>
       <div class="field"><label>Your Safaricom number</label><input name="phone" value="${esc(S.me.phone)}" placeholder="07XX XXX XXX" inputmode="tel" required></div>`,
-    { submitText: "Send prompt", onSubmit: async (f) => {
+    { submitText: "Send Ksh 1 prompt", onSubmit: async (f) => {
       const started = await S.stkTest(f.phone);
       modal("Check your phone", `<div class="stk"><div class="spinner"></div>
         <p><strong>Enter your M-Pesa PIN on your phone</strong></p><p class="muted">to pay Ksh 1 to your own ${esc("Paybill / Till")}.</p>
@@ -681,10 +696,10 @@
       UI.closeModal();
       if (r.status === "closed") return false;
       await S.refresh().catch(() => {});
-      if (r.status === "paid") toast("Test passed! Ksh 1 received (" + (r.receipt || "") + "). Tenants can now pay you with M-Pesa.");
+      if (r.status === "paid") toast("Verified! Ksh 1 received (" + (r.receipt || "") + "). Tenants can now pay you with an M-Pesa prompt.");
       else if (r.status === "cancelled") toast("You cancelled the prompt. Send it again when ready.", "err");
       else if (r.status === "timeout") toast("No answer from M-Pesa yet. If you paid, refresh in a minute.", "err");
-      else toast("Test failed: " + (r.message || "unknown reason") + ". Check your Paybill/Till number and passkey.", "err");
+      else toast("Verification failed: " + (r.message || "unknown reason") + ". Check your Paybill/Till number and passkey.", "err");
       refresh();
       return false;   // modal already closed
     } });

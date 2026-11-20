@@ -19,7 +19,7 @@
   const pendingRequests = () => S.db.requests.filter((r) => r.status === "pending" && myUnits().some((u) => u.id === r.unitId));
   const openNotices = () => S.db.notices.filter((n) => n.status !== "completed" && myUnits().some((u) => u.id === n.unitId));
   const myPayments = () => { const ids = myProps().map((p) => p.id); return S.paymentsOf((p) => ids.includes(p.propertyId)); };
-  const pendingPays = () => S.db.payments.filter((p) => p.status === "pending" && !S.db.requests.some((r) => r.unitId === p.unitId && r.tenantId === p.tenantId && r.status === "pending"));
+  const pendingPays = () => S.db.payments.filter((p) => p.status === "pending" && !p.viaStk && !S.db.requests.some((r) => r.unitId === p.unitId && r.tenantId === p.tenantId && r.status === "pending"));
   const refresh = () => Shell.render();
   const noProps = () => `<div class="card empty">
       <h3 style="color:var(--text)">Add your first building</h3>
@@ -262,8 +262,8 @@
 
   const forLabel = (p) => p.kind === "rent" ? "Rent · " + S.monthLabel(p.month) : "Deposit";
   views.payments = () => {
-    const pending = myPayments().filter((p) => p.status === "pending");
-    const list = myPayments().filter((p) => p.status !== "pending" && (!state.payProp || p.propertyId === state.payProp) && (!state.payMonth || p.date.slice(0, 7) === state.payMonth));
+    const pending = myPayments().filter((p) => p.status === "pending" && !p.viaStk);
+    const list = myPayments().filter((p) => p.status !== "pending" && !(p.viaStk && p.status === "cancelled") && (!state.payProp || p.propertyId === state.payProp) && (!state.payMonth || p.date.slice(0, 7) === state.payMonth));
     const total = list.filter((p) => p.status === "confirmed").reduce((s, p) => s + p.amount, 0);
     return `${pending.length ? `<div class="card" style="border-color:rgba(242,180,65,.45)"><div class="card-head"><h3>Waiting for your confirmation (${pending.length})</h3>
         <span class="muted small">Tenants say they paid. Check each code on your M-Pesa / bank statement, then confirm.</span></div>
@@ -341,7 +341,10 @@
         </form></div>
       <div class="card"><div class="card-head"><h3>Your records</h3></div>
         <p class="muted" style="margin-bottom:14px">Your data is stored securely online and is available on any device you log in from. You can also download a copy.</p>
-        <button class="btn btn-outline" data-act="exportPayments">Export all payments (CSV)</button></div></div>`;
+        <button class="btn btn-outline" data-act="exportPayments">Export all payments (CSV)</button></div></div>
+      <div class="card" style="margin-top:20px"><div class="card-head"><h3>M-Pesa payments</h3>
+        <span class="muted small">Tenants get a PIN prompt on their phone; the money goes straight to your Paybill / Till and is confirmed automatically.</span></div>
+        <div id="mpesaBox"><p class="muted">Checking M-Pesa connection…</p></div></div>`;
 
   /* ======================= MODALS ======================= */
   function propertyModal(p) {
@@ -588,13 +591,75 @@
     { submitText: "Add expense", onSubmit: async (f) => { if (!(+f.amount > 0)) throw new Error("Enter an amount."); await S.addExpense(S.me.id, f); toast("Expense added."); refresh(); } }),
     deleteExpense: (d) => confirmBox("Delete this expense?", async () => { await S.deleteExpense(d.id); toast("Expense removed."); refresh(); }, "Delete"),
     renew: async (d) => { await S.renewLease(d.unit, +d.m); toast("Lease renewed to " + S.fmtDate(S.unit(d.unit).leaseEnd) + "."); refresh(); },
+    connectMpesa: () => mpesaModal(),
+    disconnectMpesa: () => confirmBox("Disconnect M-Pesa? Your keys will be deleted and tenants will go back to entering M-Pesa codes.", async () => {
+      await S.disconnectMpesa(); toast("M-Pesa disconnected."); refresh(); }, "Disconnect"),
     saveProfile: async () => { const f = Object.fromEntries(new FormData(UI.$("#profileForm")));
       if (!f.name.trim()) throw new Error("Enter your name.");
       await S.updateProfile({ name: f.name.trim(), phone: f.phone.trim(), kind: f.kind, payoutInfo: f.payoutInfo.trim() });
       toast("Profile saved."); refresh(); },
   };
 
+  async function fillMpesa() {
+    const box = UI.$("#mpesaBox");
+    if (!box) return;
+    let st;
+    try { st = await S.mpesaStatus(); } catch (err) { box.innerHTML = `<p class="muted">${esc(err.message)}</p>`; return; }
+    if (!UI.$("#mpesaBox")) return;
+    if (!st.connected) {
+      box.innerHTML = `<p class="muted" style="margin-bottom:14px">Not connected. Tenants can still pay you and enter the M-Pesa code for you to confirm.</p>
+        <button class="btn btn-primary" data-act="connectMpesa">Connect M-Pesa</button>`;
+      return;
+    }
+    const live = st.environment === "production";
+    box.innerHTML = `<div class="alert-box ${live ? "info" : "warn"}"><strong>${live ? "✓ Live" : "Test mode (Safaricom sandbox — no real money)"}</strong> ·
+        ${st.type === "till" ? "Till " + esc(st.partyB) + " (store " + esc(st.shortcode) + ")" : "Paybill " + esc(st.shortcode)}
+        ${st.sharedSandbox ? " · TrackGimex test keys" : ""} · checked ${S.fmtDate(st.verifiedAt)}</div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap"><button class="btn btn-outline" data-act="connectMpesa">Change details</button>
+        <button class="btn btn-danger" data-act="disconnectMpesa">Disconnect</button></div>`;
+  }
+
+  function mpesaModal() {
+    modal("Connect M-Pesa", `
+      <div class="field"><label>Mode</label><select name="mode" id="mpMode">
+        <option value="live_paybill">Live — my Paybill</option>
+        <option value="live_till">Live — my Till (Buy Goods)</option>
+        <option value="sandbox">Test — my own Daraja sandbox app</option>
+        <option value="shared">Test — TrackGimex test keys (quick try, no keys needed)</option></select></div>
+      <div id="mpFields">
+        <div class="field-row">
+          <div class="field"><label id="mpShortLabel">Paybill number</label><input name="shortcode" inputmode="numeric" maxlength="8" placeholder="e.g. 123456"></div>
+          <div class="field" id="mpTillF" hidden><label>Till number</label><input name="partyB" inputmode="numeric" maxlength="8" placeholder="e.g. 987654"></div>
+        </div>
+        <div class="field"><label>Consumer Key</label><input name="key" autocomplete="off" spellcheck="false"></div>
+        <div class="field"><label>Consumer Secret</label><input name="secret" type="password" autocomplete="off"></div>
+        <div class="field"><label>Passkey</label><input name="passkey" type="password" autocomplete="off"></div>
+        <p class="hint">Get these from <strong>developer.safaricom.co.ke</strong> → your app (live keys come after <em>Go Live</em>; Safaricom emails the passkey).
+          Leave a key blank to keep the one already saved. Keys are checked with Safaricom and stored encrypted — nobody, including you, can view them again.</p>
+      </div>
+      <p class="hint" id="mpSharedNote" hidden>Uses Safaricom's sandbox (Paybill 174379). Prompts go to your phone but <strong>no real money moves</strong>. Switch to Live before real tenants pay.</p>`,
+    { submitText: "Check & connect", onSubmit: async (f) => {
+      const m = f.mode;
+      const d = { sharedSandbox: m === "shared", environment: m.startsWith("live") ? "production" : "sandbox",
+        type: m === "live_till" ? "till" : "paybill", shortcode: (f.shortcode || "").trim(), partyB: (f.partyB || "").trim(),
+        key: f.key, secret: f.secret, passkey: f.passkey };
+      if (m === "sandbox" && !d.shortcode) d.shortcode = "174379";
+      await S.connectMpesa(d);
+      toast(m.startsWith("live") ? "M-Pesa connected. Tenants can now pay with a PIN prompt." : "Test mode connected.");
+      refresh();
+    } });
+    const sync = () => {
+      const m = UI.$("#mpMode").value;
+      UI.$("#mpFields").hidden = m === "shared";
+      UI.$("#mpSharedNote").hidden = m !== "shared";
+      UI.$("#mpTillF").hidden = m !== "live_till";
+      UI.$("#mpShortLabel").textContent = m === "live_till" ? "Store number (Head office)" : m === "sandbox" ? "Shortcode (sandbox: 174379)" : "Paybill number";
+    };
+    UI.$("#mpMode").addEventListener("change", sync); sync();
+  }
+
   const after = {
+    settings: () => { fillMpesa(); },
     tenants: () => { const s = UI.$("#tSearch"); if (s) s.oninput = () => UI.$$("#tTable tbody tr").forEach((tr) => (tr.hidden = !tr.dataset.search.includes(s.value.toLowerCase()))); },
   };
 
@@ -606,7 +671,7 @@
       ["leases", "Leases", "file"], ["notifications", "Notifications", "bell"], ["settings", "Settings", "users"]],
     views, actions, after,
     counts: (m) => ({ requests: pendingRequests().length, moveouts: openNotices().filter((n) => n.status === "pending").length,
-      payments: S.db.payments.filter((p) => p.status === "pending" && !S.db.requests.some((r) => r.unitId === p.unitId && r.tenantId === p.tenantId && r.status === "pending")).length,
+      payments: S.db.payments.filter((p) => p.status === "pending" && !p.viaStk && !S.db.requests.some((r) => r.unitId === p.unitId && r.tenantId === p.tenantId && r.status === "pending")).length,
       notifications: S.notificationsOf(m.id).filter((n) => !n.read).length }),
   });
 })();

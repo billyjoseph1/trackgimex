@@ -1,0 +1,43 @@
+# TrackGimex — Netlify settings. Netlify reads this file automatically.
+[build]
+  publish = "public"      # the website folder; there is no build step
+  command = ""
+
+# Security headers for every page
+[[headers]]
+  for = "/*"
+  [headers.values]
+    Content-Security-Policy = "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self' https://fllqgfooletwxpwebfzw.supabase.co wss://fllqgfooletwxpwebfzw.supabase.co; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'"
+    X-Content-Type-Options = "nosniff"
+    X-Frame-Options = "DENY"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+    Permissions-Policy = "camera=(), microphone=(), geolocation=(), payment=()"
+    Strict-Transport-Security = "max-age=31536000"
+
+# Pages: always check for a fresh copy (so updates reach people at once)
+[[headers]]
+  for = "/*.html"
+  [headers.values]
+    Cache-Control = "no-cache"
+[[headers]]
+  for = "/js/*"
+  [headers.values]
+    Cache-Control = "no-cache"
+[[headers]]
+  for = "/css/*"
+  [headers.values]
+    Cache-Control = "no-cache"
+
+# Friendly addresses
+[[redirects]]
+  from = "/login"
+  to = "/login.html"
+  status = 200
+[[redirects]]
+  from = "/landlord"
+  to = "/landlord.html"
+  status = 200
+[[redirects]]
+  from = "/tenant"
+  to = "/tenant.html"
+  status = 200

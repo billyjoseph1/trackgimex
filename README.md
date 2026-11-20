@@ -9,10 +9,10 @@ A rent-tracking web app for Kenyan landlords, agents and tenants. Landlords set 
 |-------|------|--------|
 | 0 | Own repository, clean structure | ✅ Done |
 | 1 | Backend: real accounts and a shared online database (Supabase) | ✅ Done |
-| 2 | Real payments (M-Pesa, cards) through a payment provider | ⏳ Next |
-| 3 | Go live: hosting, domain, legal, backups, pilot landlords | Planned |
+| 2 | M-Pesa payments to each landlord's own Paybill / Till (Daraja) | ✅ Done (first live Paybill pending) |
+| 3 | Go live: hosting, domain, email sending, legal, backups, pilot landlords | ⏳ Next |
 
-> **Current state:** real accounts and a shared online database (Supabase). Tenants pay landlords directly (Paybill / Till / bank) and enter the M-Pesa code; the landlord confirms it before it counts. Automatic M-Pesa and card payments come in Stage 2. Don't launch to the public until Stage 3 (hosting, email sending, legal) is done.
+> **Current state:** real accounts and a shared online database (Supabase). Landlords who connect their M-Pesa Paybill/Till get paid by PIN prompt, confirmed automatically; others use the manual code + confirm method. Don't launch to the public until Stage 3 (hosting, email sending, legal) is done.
 
 ## Folder layout
 ```
@@ -41,6 +41,13 @@ supabase/
 - Anything that changes money, tenants or a house's status goes through **server functions** (`supabase.rpc(...)`) that check who is calling. Their code is in `supabase/migrations/`.
 - **Payments:** a landlord can record cash/M-Pesa/bank payments directly (confirmed at once). A tenant *reports* a payment with its M-Pesa/bank code; it stays **pending** until the landlord confirms it. A booking is confirmed when the landlord approves the house request.
 - **Linking tenants:** when a landlord adds a tenant, they get an 8-character **invite code** to send by WhatsApp/SMS. The tenant enters it after signing up. If the landlord entered the tenant's email, the house links automatically once that email is verified.
+
+### M-Pesa (Stage 2)
+- Each landlord connects **their own** Paybill or Till in **Settings → M-Pesa payments** (Daraja Consumer Key, Consumer Secret, Passkey). Keys are checked with Safaricom and stored encrypted in **Supabase Vault**; the browser can never read them.
+- The landlord then sends a **Ksh 1 test prompt** to their own phone. Tenants only see **Pay with M-Pesa** after it succeeds (changing details requires a new test).
+- Edge Functions in `supabase/functions/`: `pay-connect` (save + check keys), `pay-start` (send prompt / check status / test), `pay-callback` (Safaricom's result — verified again with Safaricom's STK query before anything is marked paid).
+- Server secrets (Supabase → Edge Functions → Secrets): `DARAJA_SANDBOX_KEY`, `DARAJA_SANDBOX_SECRET` (TrackGimex's own sandbox app, used by "test mode").
+- Deploy a function: `supabase functions deploy pay-start --no-verify-jwt` (or the Management API). All three run with JWT verification off and check the caller themselves.
 
 ### Changing the database
 1. Add a new file in `supabase/migrations/` (e.g. `20261201000001_add_x.sql`). Never edit a migration that has already been run.

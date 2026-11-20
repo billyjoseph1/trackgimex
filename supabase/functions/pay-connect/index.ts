@@ -8,8 +8,9 @@ Deno.serve(async (req) => {
   try {
     const uid = await callerId(req);
     if (!uid) return json({ error: "Please log in again." }, 401);
-    const { data: prof } = await admin().from("profiles").select("role").eq("id", uid).maybeSingle();
-    if (prof?.role !== "landlord") return json({ error: "Only landlords and agents can connect M-Pesa." }, 403);
+    if ((await rpc<string | null>("svc_user_role", { p_user: uid })) !== "landlord") {
+      return json({ error: "Only landlords and agents can connect M-Pesa." }, 403);
+    }
 
     const b = await req.json().catch(() => ({}));
     const shared = b.sharedSandbox === true;

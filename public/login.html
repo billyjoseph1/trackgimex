@@ -122,7 +122,10 @@
       if (!e.target.agree.checked) return UI.toast("Please accept the terms to continue.", "err");
       busy(e.target, async () => {
         const r = await Store.register({ ...f, role });
-        if (r.needsConfirmation) sent(`<strong>Check your email.</strong> We sent a confirmation link to <strong>${UI.esc(f.email)}</strong>. Click it, then log in here. (Check your spam folder too.)`);
+        if (r.needsConfirmation) sent(`<strong>Check your email.</strong> We sent a confirmation link to <strong>${UI.esc(f.email)}</strong>. Click it, then log in here. (Check your spam folder too.)
+          <br><br><span class="small">No email after a few minutes? If you already have a TrackGimex account with this address, no new email is sent —
+          <button type="button" data-mode="login" style="background:none;border:0;color:inherit;text-decoration:underline;cursor:pointer;font:inherit">log in</button> or use
+          <button type="button" data-mode="forgot" style="background:none;border:0;color:inherit;text-decoration:underline;cursor:pointer;font:inherit">Forgot password</button>.</span>`);
         else go(r.profile);
       });
     };

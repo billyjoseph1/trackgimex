@@ -40,9 +40,31 @@ reset role; select t_eq((select count(*) from vault.secrets), 3, 'updating does 
 select t_fail($$select svc_save_mpesa_account('00000000-0000-0000-0000-000000000003', 'sandbox', 'paybill', '174379', '', false, 'k', 's', 'p')$$, 'Not a landlord');
 select t_fail($$select svc_save_mpesa_account('00000000-0000-0000-0000-0000000000c1', 'production', 'paybill', '174379', '', true, '', '', '')$$, 'only for sandbox');
 
+-- ===== landlord's Ksh 1 test prompt gates tenant payments =====
+reset role;
+select t_eq((select mpesa_ready::int from profiles where id = '00000000-0000-0000-0000-0000000000c1'), 0, 'saved but untested: tenants cannot use M-Pesa yet');
+set role service_role;
+select t_fail($$select svc_prepare_stk('00000000-0000-0000-0000-0000000000c2', (select v from mids where k = 'm1'), 'rent', '2026-11', 8000, '254712345678')$$, 'not connected M-Pesa');
+select t_fail($$select svc_prepare_test_stk('00000000-0000-0000-0000-0000000000c1', '0712')$$, 'valid Safaricom number');
+select (svc_prepare_test_stk('00000000-0000-0000-0000-0000000000c1', '254711000000'))->>'id' as tst1 \gset
+select svc_stk_sent(:'tst1', true, 'ws_CO_T1', 'MR_T1', '');
+select t_eq((svc_stk_complete(:'tst1', false, null, null, '2001', 'The initiator information is invalid.') = 'failed')::int, 1, 'failed test prompt recorded');
+reset role;
+select t_eq((select mpesa_ready::int from profiles where id = '00000000-0000-0000-0000-0000000000c1'), 0, 'failed test keeps M-Pesa off for tenants');
+set role service_role;
+select (svc_prepare_test_stk('00000000-0000-0000-0000-0000000000c1', '254711000000'))->>'id' as tst2 \gset
+select svc_stk_sent(:'tst2', true, 'ws_CO_T2', 'MR_T2', '');
+select t_eq((svc_stk_complete(:'tst2', true, 'TST1A2B3C4', 1, '0', 'ok') = 'paid')::int, 1, 'test prompt paid');
+reset role;
+select t_eq((select mpesa_ready::int from profiles where id = '00000000-0000-0000-0000-0000000000c1'), 1, 'successful test switches M-Pesa on for tenants');
+select t_eq((select count(*) from payments where ref = 'TST1A2B3C4'), 0, 'test prompt creates no rent payment');
+select t_eq((select count(*) from notifications where user_id = '00000000-0000-0000-0000-0000000000c1' and text like 'M-Pesa test passed%'), 1, 'landlord told the test passed');
+set role service_role;
+
 reset role; set role authenticated;
 select t_as('00000000-0000-0000-0000-0000000000c1');
 select t_eq(((my_mpesa_status())->>'connected')::boolean::int, 1, 'landlord sees M-Pesa connected');
+select t_eq(((my_mpesa_status())->>'tested')::boolean::int, 1, 'landlord sees the test passed');
 select t_eq(((my_mpesa_status()) ? 'key')::int, 0, 'status never includes keys');
 select t_as('00000000-0000-0000-0000-0000000000c2');
 select t_eq((select mpesa_ready::int from profiles where id = '00000000-0000-0000-0000-0000000000c1'), 1, 'tenant can see landlord accepts M-Pesa');
@@ -101,6 +123,13 @@ reset role; set role service_role;
 select (svc_prepare_stk('00000000-0000-0000-0000-0000000000c2', (select v from mids where k = 'm1'), 'rent', '2026-12', 8000, '254712345678'))->>'id' as stk4 \gset
 select svc_stk_sent(:'stk4', false, null, null, 'Invalid Access Token');
 select t_eq((select count(*) from payments where stk_request_id = :'stk4' and status = 'cancelled'), 1, 'failed send cancels the pending payment');
+
+-- changing details needs a new test
+reset role; set role service_role;
+select svc_save_mpesa_account('00000000-0000-0000-0000-0000000000c1', 'sandbox', 'paybill', '174379', '', false, '', '', 'PASS3');
+reset role;
+select t_eq((select mpesa_ready::int from profiles where id = '00000000-0000-0000-0000-0000000000c1'), 0, 'changing M-Pesa details requires a new test');
+set role authenticated;
 
 -- disconnect wipes the keys
 reset role; set role authenticated;

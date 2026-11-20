@@ -283,6 +283,27 @@ const Store = (() => {
   const stkPay = (d) => fn("pay-start", { action: "pay", ...d });
   const stkStatus = (id) => rpc("stk_status", { p_id: id });
   const stkCheck = (id) => fn("pay-start", { action: "check", id });
+  const stkTest = (phone) => fn("pay-start", { action: "test", phone });
+  /** Wait for an STK push to finish. Returns { status: paid|failed|cancelled|timeout, receipt, message }.
+      onTick(secondsWaited) is called every poll so the page can update its message. */
+  async function waitForStk(id, { onTick, isOpen } = {}) {
+    const t0 = Date.now();
+    let lastCheck = 0;
+    while (Date.now() - t0 < 150000) {
+      await new Promise((r) => setTimeout(r, 3000));
+      if (isOpen && !isOpen()) return { status: "closed" };
+      let st = null;
+      try { st = await stkStatus(id); } catch (e) { /* network blip: keep waiting */ }
+      // if Safaricom's confirmation is slow, ask Safaricom directly (every 10s after 20s)
+      if (st && st.status === "sent" && Date.now() - t0 > 20000 && Date.now() - lastCheck > 10000) {
+        lastCheck = Date.now();
+        try { const c = await stkCheck(id); if (c.status !== "sent") st = await stkStatus(id); } catch (e) { /* keep waiting */ }
+      }
+      if (onTick) onTick(Math.round((Date.now() - t0) / 1000));
+      if (st && ["paid", "failed", "cancelled"].includes(st.status)) return st;
+    }
+    return { status: "timeout" };
+  }
 
   /* ---------- formatting ---------- */
   const money = (n) => "Ksh " + Number(n || 0).toLocaleString("en-KE");
@@ -300,7 +321,7 @@ const Store = (() => {
     recordPayment, reportPayment, reviewPayment, deletePayment,
     requestUnit, decideRequest, cancelRequest, giveNotice, acknowledgeNotice, withdrawNotice,
     saveCheck, addExpense, deleteExpense,
-    mpesaStatus, connectMpesa, disconnectMpesa, stkPay, stkStatus, stkCheck,
+    mpesaStatus, connectMpesa, disconnectMpesa, stkPay, stkStatus, stkCheck, stkTest, waitForStk,
     money, monthLabel, fmtDate,
   };
 })();

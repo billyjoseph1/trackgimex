@@ -2,6 +2,7 @@
 // or check on one whose confirmation from Safaricom has not arrived yet.
 //   POST { action: "pay", unitId, kind, month?, amount?, phone }
 //   POST { action: "check", id }
+//   POST { action: "test", phone }      (landlord: Ksh 1 prompt to their own phone)
 import { callerId, cors, json, normalisePhone, resolve, rpc, stkCheck, stkPush, type Creds } from "../_shared/daraja.ts";
 
 Deno.serve(async (req) => {
@@ -27,8 +28,15 @@ Deno.serve(async (req) => {
 
     const phone = normalisePhone(b.phone);
     if (!phone) return json({ error: "Enter a valid Safaricom number, e.g. 0712 345 678." }, 400);
-    const prep = await rpc<{ id: string; secret: string; landlordId: string; amount: number; phone: string; accountRef: string; description: string }>(
-      "svc_prepare_stk", { p_user: uid, p_unit: b.unitId, p_kind: b.kind, p_month: b.month ?? null, p_amount: b.amount ?? null, p_phone: phone });
+    type Prep = { id: string; secret: string; landlordId: string; amount: number; phone: string; accountRef: string; description: string };
+    let prep: Prep;
+    if (b.action === "test") {
+      // landlord checks their own Paybill/Till with a Ksh 1 prompt to their phone
+      if ((await rpc<string | null>("svc_user_role", { p_user: uid })) !== "landlord") return json({ error: "Only landlords can send a test prompt." }, 403);
+      prep = await rpc<Prep>("svc_prepare_test_stk", { p_landlord: uid, p_phone: phone });
+    } else {
+      prep = await rpc<Prep>("svc_prepare_stk", { p_user: uid, p_unit: b.unitId, p_kind: b.kind, p_month: b.month ?? null, p_amount: b.amount ?? null, p_phone: phone });
+    }
     let c;
     try { c = resolve(await rpc<Creds>("svc_mpesa_credentials", { p_landlord: prep.landlordId })); }
     catch (e) { await rpc("svc_stk_sent", { p_id: prep.id, p_ok: false, p_checkout: null, p_merchant: null, p_message: String(e) }); throw e; }

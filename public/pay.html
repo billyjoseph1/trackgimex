@@ -151,29 +151,13 @@
         <p><strong>Enter your M-Pesa PIN on your phone</strong></p>
         <p class="muted">to pay ${S.money(started.amount)} to ${esc(ll.name)}. Keep this page open.</p>
         <p class="hint" id="stkMsg" style="margin-top:14px">Waiting for M-Pesa…</p></div>`);
-      const t0 = Date.now();
-      let lastCheck = 0, done = false;
-      while (!done && Date.now() - t0 < 150000) {
-        await new Promise((r) => setTimeout(r, 3000));
-        if (!$(".modal-backdrop")) break;   // closed by the tenant
-        let st = null;
-        try { st = await S.stkStatus(started.id); } catch (err) { /* network blip: keep waiting */ }
-        // if Safaricom's confirmation is slow, ask Safaricom directly every 10s after 20s
-        if (st && st.status === "sent" && Date.now() - t0 > 20000 && Date.now() - lastCheck > 10000) {
-          lastCheck = Date.now();
-          try { const c = await S.stkCheck(started.id); if (c.status !== "sent") st = await S.stkStatus(started.id); } catch (err) { /* keep waiting */ }
-        }
-        if (!st) continue;
-        if (st.status === "paid") { done = true; UI.closeModal(); await S.refresh().catch(() => {}); success(st.receipt, st.amount); }
-        else if (st.status === "failed" || st.status === "cancelled") {
-          done = true; UI.closeModal();
-          toast(st.status === "cancelled" ? "You cancelled the M-Pesa prompt. Nothing was paid." : "M-Pesa payment failed: " + (st.message || "please try again."), "err");
-        } else if (Date.now() - t0 > 30000) { const m = $("#stkMsg"); if (m) m.textContent = "Still waiting… If you didn't get a prompt, close this and try again."; }
-      }
-      if (!done) {
-        UI.closeModal();
-        toast("We haven't heard back from M-Pesa yet. If money left your account, it will show in Payments shortly.", "err");
-      }
+      const r = await S.waitForStk(started.id, { isOpen: () => !!$(".modal-backdrop"),
+        onTick: (sec) => { const m = $("#stkMsg"); if (m && sec > 30) m.textContent = "Still waiting… If you didn't get a prompt, close this and try again."; } });
+      UI.closeModal();
+      if (r.status === "paid") { await S.refresh().catch(() => {}); success(r.receipt, r.amount); return; }
+      if (r.status === "cancelled") toast("You cancelled the M-Pesa prompt. Nothing was paid.", "err");
+      else if (r.status === "failed") toast("M-Pesa payment failed: " + (r.message || "please try again."), "err");
+      else if (r.status === "timeout") toast("We haven't heard back from M-Pesa yet. If money left your account, it will show in Payments shortly.", "err");
       btn.disabled = false; btn.innerHTML = `Pay <span class="js-amt">${S.money(amount())}</span> with M-Pesa`;
     };
     $("#payForm").onsubmit = async (e) => {

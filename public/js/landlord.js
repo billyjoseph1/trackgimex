@@ -592,6 +592,7 @@
     deleteExpense: (d) => confirmBox("Delete this expense?", async () => { await S.deleteExpense(d.id); toast("Expense removed."); refresh(); }, "Delete"),
     renew: async (d) => { await S.renewLease(d.unit, +d.m); toast("Lease renewed to " + S.fmtDate(S.unit(d.unit).leaseEnd) + "."); refresh(); },
     connectMpesa: () => mpesaModal(),
+    testMpesa: () => testPromptModal(),
     disconnectMpesa: () => confirmBox("Disconnect M-Pesa? Your keys will be deleted and tenants will go back to entering M-Pesa codes.", async () => {
       await S.disconnectMpesa(); toast("M-Pesa disconnected."); refresh(); }, "Disconnect"),
     saveProfile: async () => { const f = Object.fromEntries(new FormData(UI.$("#profileForm")));
@@ -612,10 +613,16 @@
       return;
     }
     const live = st.environment === "production";
-    box.innerHTML = `<div class="alert-box ${live ? "info" : "warn"}"><strong>${live ? "✓ Live" : "Test mode (Safaricom sandbox — no real money)"}</strong> ·
-        ${st.type === "till" ? "Till " + esc(st.partyB) + " (store " + esc(st.shortcode) + ")" : "Paybill " + esc(st.shortcode)}
-        ${st.sharedSandbox ? " · TrackGimex test keys" : ""} · checked ${S.fmtDate(st.verifiedAt)}</div>
-      <div style="display:flex;gap:10px;flex-wrap:wrap"><button class="btn btn-outline" data-act="connectMpesa">Change details</button>
+    const where = (st.type === "till" ? "Till " + esc(st.partyB) + " (store " + esc(st.shortcode) + ")" : "Paybill " + esc(st.shortcode)) +
+      (st.sharedSandbox ? " · TrackGimex test keys" : "");
+    box.innerHTML = `
+      <div class="alert-box ${live ? "info" : "warn"}"><strong>${live ? "Live" : "Test mode (Safaricom sandbox — no real money)"}</strong> · ${where}</div>
+      ${st.tested
+        ? `<div class="alert-box info">✓ <strong>Tested ${S.fmtDate(st.testedAt)}</strong> — a Ksh 1 test payment went through. Your tenants see <em>Pay with M-Pesa</em>.</div>`
+        : `<div class="alert-box warn"><strong>One last step:</strong> send a Ksh 1 test prompt to your own phone. Tenants can pay you by M-Pesa only after the test succeeds — it proves your ${st.type === "till" ? "Till" : "Paybill"}, keys and passkey are correct.</div>`}
+      <div style="display:flex;gap:10px;flex-wrap:wrap">
+        <button class="btn ${st.tested ? "btn-outline" : "btn-primary"}" data-act="testMpesa">${st.tested ? "Send another test" : "Send test prompt (Ksh 1)"}</button>
+        <button class="btn btn-outline" data-act="connectMpesa">Change details</button>
         <button class="btn btn-danger" data-act="disconnectMpesa">Disconnect</button></div>`;
   }
 
@@ -645,8 +652,9 @@
         key: f.key, secret: f.secret, passkey: f.passkey };
       if (m === "sandbox" && !d.shortcode) d.shortcode = "174379";
       await S.connectMpesa(d);
-      toast(m.startsWith("live") ? "M-Pesa connected. Tenants can now pay with a PIN prompt." : "Test mode connected.");
+      toast("Keys accepted by Safaricom. Now send yourself a Ksh 1 test prompt.");
       refresh();
+      setTimeout(testPromptModal, 100);
     } });
     const sync = () => {
       const m = UI.$("#mpMode").value;
@@ -656,6 +664,30 @@
       UI.$("#mpShortLabel").textContent = m === "live_till" ? "Store number (Head office)" : m === "sandbox" ? "Shortcode (sandbox: 174379)" : "Paybill number";
     };
     UI.$("#mpMode").addEventListener("change", sync); sync();
+  }
+
+  function testPromptModal() {
+    modal("Send a test prompt", `
+      <p class="muted" style="margin-bottom:14px">We'll send a <strong>Ksh 1</strong> M-Pesa prompt to your phone, paid into your own Paybill / Till.
+        Enter your PIN, then check the Ksh 1 arrives in your business account. This proves tenants' payments will reach you.</p>
+      <div class="field"><label>Your Safaricom number</label><input name="phone" value="${esc(S.me.phone)}" placeholder="07XX XXX XXX" inputmode="tel" required></div>`,
+    { submitText: "Send prompt", onSubmit: async (f) => {
+      const started = await S.stkTest(f.phone);
+      modal("Check your phone", `<div class="stk"><div class="spinner"></div>
+        <p><strong>Enter your M-Pesa PIN on your phone</strong></p><p class="muted">to pay Ksh 1 to your own ${esc("Paybill / Till")}.</p>
+        <p class="hint" id="stkMsg" style="margin-top:14px">Waiting for M-Pesa…</p></div>`);
+      const r = await S.waitForStk(started.id, { isOpen: () => !!UI.$(".modal-backdrop"),
+        onTick: (sec) => { const m = UI.$("#stkMsg"); if (m && sec > 30) m.textContent = "Still waiting… If no prompt arrived, close this and check your details."; } });
+      UI.closeModal();
+      if (r.status === "closed") return false;
+      await S.refresh().catch(() => {});
+      if (r.status === "paid") toast("Test passed! Ksh 1 received (" + (r.receipt || "") + "). Tenants can now pay you with M-Pesa.");
+      else if (r.status === "cancelled") toast("You cancelled the prompt. Send it again when ready.", "err");
+      else if (r.status === "timeout") toast("No answer from M-Pesa yet. If you paid, refresh in a minute.", "err");
+      else toast("Test failed: " + (r.message || "unknown reason") + ". Check your Paybill/Till number and passkey.", "err");
+      refresh();
+      return false;   // modal already closed
+    } });
   }
 
   const after = {

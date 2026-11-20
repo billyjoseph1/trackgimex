@@ -13,8 +13,12 @@ Deno.serve(async (req) => {
     }
 
     const b = await req.json().catch(() => ({}));
-    const shared = b.sharedSandbox === true;
-    const env = shared ? "sandbox" : b.environment === "production" ? "production" : "sandbox";
+    // Only live Paybills / Tills can be connected (test modes were removed for launch).
+    if (b.sharedSandbox === true || b.environment !== "production") {
+      return json({ error: "Only a live Paybill or Till can be connected." }, 400);
+    }
+    const shared = false;
+    const env = "production";
     const type = b.type === "till" ? "till" : "paybill";
     const shortcode = shared ? SANDBOX_SHORTCODE : String(b.shortcode || "").trim();
     const partyB = shared ? SANDBOX_SHORTCODE : String(b.partyB || "").trim() || shortcode;

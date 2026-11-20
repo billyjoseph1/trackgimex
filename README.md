@@ -42,12 +42,12 @@ supabase/
 - **Payments:** a landlord can record cash/M-Pesa/bank payments directly (confirmed at once). A tenant *reports* a payment with its M-Pesa/bank code; it stays **pending** until the landlord confirms it. A booking is confirmed when the landlord approves the house request.
 - **Linking tenants:** when a landlord adds a tenant, they get an 8-character **invite code** to send by WhatsApp/SMS. The tenant enters it after signing up. If the landlord entered the tenant's email, the house links automatically once that email is verified.
 
-### M-Pesa (Stage 2)
-- Each landlord connects **their own** Paybill or Till in **Settings → M-Pesa payments** (Daraja Consumer Key, Consumer Secret, Passkey). Keys are checked with Safaricom and stored encrypted in **Supabase Vault**; the browser can never read them.
-- The landlord then sends a **Ksh 1 test prompt** to their own phone. Tenants only see **Pay with M-Pesa** after it succeeds (changing details requires a new test).
-- Edge Functions in `supabase/functions/`: `pay-connect` (save + check keys), `pay-start` (send prompt / check status / test), `pay-callback` (Safaricom's result — verified again with Safaricom's STK query before anything is marked paid).
-- Server secrets (Supabase → Edge Functions → Secrets): `DARAJA_SANDBOX_KEY`, `DARAJA_SANDBOX_SECRET` (TrackGimex's own sandbox app, used by "test mode").
-- Deploy a function: `supabase functions deploy pay-start --no-verify-jwt` (or the Management API). All three run with JWT verification off and check the caller themselves.
+### M-Pesa
+Landlords choose how tenants pay them in **Settings → M-Pesa payments**:
+- **Paybill** or **Till (Buy Goods):** the landlord enters their live Daraja Consumer Key, Consumer Secret and Passkey. Keys are checked with Safaricom and stored encrypted in **Supabase Vault** (never readable in the browser). After a successful **Ksh 1 verification** from the landlord's own phone, tenants get an M-Pesa prompt and payments are confirmed automatically. Changing details requires verifying again.
+- **M-Pesa phone number (Send Money):** tenants send money and enter the M-Pesa code; the landlord confirms it under Payments. (Safaricom only allows automatic prompts for Paybills and Tills.)
+
+Edge Functions in `supabase/functions/`: `pay-connect` (save + check live keys), `pay-start` (send prompt / check status / Ksh 1 verification), `pay-callback` (Safaricom's result — verified again with Safaricom's STK query before anything is marked paid). All run with JWT verification off and check the caller themselves.
 
 ### Changing the database
 1. Add a new file in `supabase/migrations/` (e.g. `20261201000001_add_x.sql`). Never edit a migration that has already been run.

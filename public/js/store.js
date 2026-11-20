@@ -55,10 +55,10 @@ const Store = (() => {
     status: r.status, tenantId: r.tenant_id, leaseStart: r.lease_start, leaseEnd: r.lease_end });
   const mapTenant = (r) => ({ id: r.id, role: "tenant", name: r.name, phone: r.phone, email: r.email, userId: r.user_id,
     hasAccount: !!r.user_id, landlordId: r.landlord_id, inviteCode: r.invite_code });
-  const mapLandlord = (r) => ({ id: r.id, role: "landlord", kind: r.kind, name: r.name, phone: r.phone, payoutInfo: r.payout_info || "" });
+  const mapLandlord = (r) => ({ id: r.id, role: "landlord", kind: r.kind, name: r.name, phone: r.phone, payoutInfo: r.payout_info || "", mpesaReady: !!r.mpesa_ready });
   const mapPayment = (r) => ({ id: r.id, receiptNo: "TG-" + r.receipt_no, landlordId: r.landlord_id, propertyId: r.property_id,
     unitId: r.unit_id, unitLabel: r.unit_label, tenantId: r.tenant_id, kind: r.kind, month: r.month, amount: r.amount,
-    method: r.method, ref: r.ref, status: r.status, recordedBy: r.recorded_by, date: r.created_at });
+    method: r.method, ref: r.ref, status: r.status, recordedBy: r.recorded_by, date: r.created_at, viaStk: !!r.stk_request_id });
   const mapRequest = (r) => ({ id: r.id, unitId: r.unit_id, tenantId: r.tenant_id, landlordId: r.landlord_id, status: r.status,
     message: r.message, paid: r.paid, date: r.created_at });
   const mapNotice = (r) => ({ id: r.id, unitId: r.unit_id, tenantId: r.tenant_id, landlordId: r.landlord_id,
@@ -77,9 +77,9 @@ const Store = (() => {
   async function loadProfile() {
     const { data: { session } } = await sb.auth.getSession();
     if (!session) { me = null; return null; }
-    const p = await run(sb.from("profiles").select("id, role, kind, name, phone, payout_info").eq("id", session.user.id).maybeSingle());
+    const p = await run(sb.from("profiles").select("id, role, kind, name, phone, payout_info, mpesa_ready").eq("id", session.user.id).maybeSingle());
     if (!p) { me = null; return null; }
-    me = { id: p.id, role: p.role, kind: p.kind, name: p.name, phone: p.phone, payoutInfo: p.payout_info || "", email: session.user.email, tenantIds: [] };
+    me = { id: p.id, role: p.role, kind: p.kind, name: p.name, phone: p.phone, payoutInfo: p.payout_info || "", mpesaReady: !!p.mpesa_ready, email: session.user.email, tenantIds: [] };
     return me;
   }
 
@@ -100,7 +100,7 @@ const Store = (() => {
         all(() => sb.from("monthly_checks").select("*").eq("landlord_id", me.id)),
       ]);
       d.units = units.map(mapUnit);
-      d.users = tenants.map(mapTenant).concat([mapLandlord({ ...me, payout_info: me.payoutInfo })]);
+      d.users = tenants.map(mapTenant).concat([mapLandlord({ ...me, payout_info: me.payoutInfo, mpesa_ready: me.mpesaReady })]);
       Object.assign(d, { payments: pays.map(mapPayment), requests: reqs.map(mapRequest), notices: notices.map(mapNotice),
         notifications: notes.map(mapNote), expenses: ex.map(mapExpense), checks: checks.map(mapCheck) });
     } else {
@@ -115,7 +115,7 @@ const Store = (() => {
       me.tenantIds = tenants.filter((t) => t.user_id === me.id).map((t) => t.id);
       d.units = units.map(mapUnit);
       d.properties = (await allIn("properties", "id", d.units.map((u) => u.propertyId))).map(mapProperty);
-      const landlords = await allIn("profiles", "id", d.properties.map((p) => p.landlordId), "id, role, kind, name, phone, payout_info");
+      const landlords = await allIn("profiles", "id", d.properties.map((p) => p.landlordId), "id, role, kind, name, phone, payout_info, mpesa_ready");
       d.users = tenants.map(mapTenant).concat(landlords.map(mapLandlord));
       Object.assign(d, { payments: pays.map(mapPayment), requests: reqs.map(mapRequest), notices: notices.map(mapNotice),
         notifications: notes.map(mapNote) });
@@ -260,6 +260,51 @@ const Store = (() => {
     await run(sb.from("notifications").update({ read: true }).eq("user_id", me.id).eq("read", false));
   }
 
+  /* ---------- M-Pesa (server functions) ---------- */
+  async function fn(name, body) {
+    const { data: { session } } = await sb.auth.getSession();
+    if (!session) throw new Error("Your session has expired. Please log in again.");
+    let res;
+    try {
+      res = await fetch(TG_CONFIG.supabaseUrl + "/functions/v1/" + name, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", apikey: TG_CONFIG.supabaseKey, Authorization: "Bearer " + session.access_token },
+        body: JSON.stringify(body || {}),
+      });
+    } catch (e) { throw new Error(friendly(e)); }
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.error) throw new Error(data.error || "The server could not complete this (" + res.status + ").");
+    return data;
+  }
+  const mpesaStatus = () => rpc("my_mpesa_status", {});
+  async function connectMpesa(d) { const r = await fn("pay-connect", d); await loadProfile(); await load(); return r; }
+  async function disconnectMpesa() { await rpc("disconnect_mpesa", {}); await loadProfile(); await load(); }
+  /** Send the M-Pesa PIN prompt. d = { unitId, kind, month, amount, phone } */
+  const stkPay = (d) => fn("pay-start", { action: "pay", ...d });
+  const stkStatus = (id) => rpc("stk_status", { p_id: id });
+  const stkCheck = (id) => fn("pay-start", { action: "check", id });
+  const stkTest = (phone) => fn("pay-start", { action: "test", phone });
+  /** Wait for an STK push to finish. Returns { status: paid|failed|cancelled|timeout, receipt, message }.
+      onTick(secondsWaited) is called every poll so the page can update its message. */
+  async function waitForStk(id, { onTick, isOpen } = {}) {
+    const t0 = Date.now();
+    let lastCheck = 0;
+    while (Date.now() - t0 < 150000) {
+      await new Promise((r) => setTimeout(r, 3000));
+      if (isOpen && !isOpen()) return { status: "closed" };
+      let st = null;
+      try { st = await stkStatus(id); } catch (e) { /* network blip: keep waiting */ }
+      // if Safaricom's confirmation is slow, ask Safaricom directly (every 10s after 20s)
+      if (st && st.status === "sent" && Date.now() - t0 > 20000 && Date.now() - lastCheck > 10000) {
+        lastCheck = Date.now();
+        try { const c = await stkCheck(id); if (c.status !== "sent") st = await stkStatus(id); } catch (e) { /* keep waiting */ }
+      }
+      if (onTick) onTick(Math.round((Date.now() - t0) / 1000));
+      if (st && ["paid", "failed", "cancelled"].includes(st.status)) return st;
+    }
+    return { status: "timeout" };
+  }
+
   /* ---------- formatting ---------- */
   const money = (n) => "Ksh " + Number(n || 0).toLocaleString("en-KE");
   const monthLabel = (m) => { if (!m) return ""; const [y, mo] = m.split("-"); return new Date(+y, +mo - 1, 1).toLocaleDateString("en-GB", { month: "long", year: "numeric" }); };
@@ -276,6 +321,7 @@ const Store = (() => {
     recordPayment, reportPayment, reviewPayment, deletePayment,
     requestUnit, decideRequest, cancelRequest, giveNotice, acknowledgeNotice, withdrawNotice,
     saveCheck, addExpense, deleteExpense,
+    mpesaStatus, connectMpesa, disconnectMpesa, stkPay, stkStatus, stkCheck, stkTest, waitForStk,
     money, monthLabel, fmtDate,
   };
 })();

@@ -7,7 +7,7 @@
   const propName = (id) => S.property(id)?.name || "";
   const myNotice = (u) => u && S.db.notices.find((n) => n.unitId === u.id && S.isMine(n.tenantId) && n.status !== "completed");
   const myRequests = () => S.db.requests.filter((r) => S.isMine(r.tenantId)).sort((a, b) => b.date.localeCompare(a.date));
-  const myPayments = () => S.paymentsOf((p) => S.isMine(p.tenantId));
+  const myPayments = () => S.paymentsOf((p) => S.isMine(p.tenantId) && !(p.viaStk && p.status === "cancelled"));
   const houseIcon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 11l9-8 9 8"/><path d="M5 10v10h14V10"/><path d="M10 20v-6h4v6"/></svg>`;
   const payStatus = (p) => p.status === "confirmed" ? "" : p.status === "pending" ? badge("awaiting") : badge(p.status);
 
